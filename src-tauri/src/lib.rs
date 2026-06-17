@@ -3,6 +3,7 @@ mod config;
 mod disk_scanner;
 mod http_safety;
 mod llm_client;
+mod secret;
 mod storage;
 mod system_monitor;
 #[cfg(test)]
@@ -432,7 +433,14 @@ pub fn run() {
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
-            let storage = match Storage::open(data_dir.join("ipet.sqlite3")) {
+            let secret = match secret::MachineKey::load_or_generate(&data_dir) {
+                Ok(k) => Some(k),
+                Err(err) => {
+                    tracing::warn!(error = %err, "machine key unavailable; api_key will be stored as plaintext");
+                    None
+                }
+            };
+            let storage = match Storage::open_with_secret(data_dir.join("ipet.sqlite3"), secret) {
                 Ok(s) => Arc::new(s),
                 Err(err) => {
                     tracing::error!(error = %err, path = %data_dir.display(), "failed to open storage");

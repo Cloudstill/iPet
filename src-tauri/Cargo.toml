@@ -13,6 +13,8 @@ crate-type = ["rlib"]
 tauri-build = { version = "2.6.2", features = [] }
 
 [dependencies]
+base64 = "0.22.1"
+chacha20poly1305 = "0.10.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde"] }
 futures-util = "0.3.32"
 rayon = "1.12.0"

@@ -1,5 +1,6 @@
 use crate::app_error::{AppError, AppResult};
 use crate::config::LlmSettings;
+use crate::secret::MachineKey;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -96,6 +97,11 @@ pub struct TokenUsageStats {
 pub struct Storage {
     db_path: PathBuf,
     conn: Mutex<Connection>,
+    /// Optional at-rest crypto key. When present, sensitive fields like
+    /// `LlmSettings.api_key` are stored in the DB as an `enc:v1:...` envelope
+    /// instead of plaintext. Legacy plaintext values continue to load via
+    /// `MachineKey::decrypt_or_passthrough`.
+    secret: Option<MachineKey>,
 }
 
 /// Configurable retention thresholds. The defaults trim everything aggressively
@@ -130,6 +136,13 @@ pub struct RetentionReport {
 
 impl Storage {
     pub fn open(path: impl AsRef<Path>) -> AppResult<Self> {
+        Self::open_with_secret(path, None)
+    }
+
+    pub fn open_with_secret(
+        path: impl AsRef<Path>,
+        secret: Option<MachineKey>,
+    ) -> AppResult<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -138,6 +151,7 @@ impl Storage {
         let storage = Self {
             db_path: path,
             conn: Mutex::new(conn),
+            secret,
         };
         storage.migrate()?;
         storage.seed_builtin_tools()?;
@@ -336,18 +350,43 @@ impl Storage {
                 |row| row.get(0),
             )
             .optional()?;
+        drop(conn);
 
-        match value {
-            Some(raw) => Ok(serde_json::from_str(&raw).unwrap_or_default()),
-            None => Ok(LlmSettings::default()),
+        let mut settings: LlmSettings = match value {
+            Some(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+            None => LlmSettings::default(),
+        };
+
+        // If a machine key is wired in, transparently decrypt the api_key.
+        // Legacy plaintext keys pass through (see decrypt_or_passthrough) so
+        // upgrades don't drop existing credentials.
+        if let (Some(key), Some(api_key)) = (self.secret.as_ref(), settings.api_key.as_ref()) {
+            match key.decrypt_or_passthrough(api_key) {
+                Ok(plain) => settings.api_key = Some(plain),
+                Err(err) => {
+                    tracing::warn!(error = %err, "failed to decrypt stored api_key; clearing");
+                    settings.api_key = None;
+                }
+            }
         }
+        Ok(settings)
     }
 
     pub fn save_llm_settings(&self, settings: &LlmSettings) -> AppResult<()> {
         settings
             .validate_public_fields()
             .map_err(AppError::Config)?;
-        let value = serde_json::to_string_pretty(settings)?;
+
+        // Clone so we can swap the api_key for an encrypted envelope without
+        // mutating the caller's struct.
+        let mut to_persist = settings.clone();
+        if let (Some(key), Some(api_key)) = (self.secret.as_ref(), to_persist.api_key.as_ref()) {
+            if !api_key.trim().is_empty() && !api_key.starts_with("enc:v1:") {
+                to_persist.api_key = Some(key.encrypt(api_key)?);
+            }
+        }
+
+        let value = serde_json::to_string_pretty(&to_persist)?;
         self.set_preference("llm_settings", &value)
     }
 
@@ -792,6 +831,15 @@ mod tests {
         (dir, storage)
     }
 
+    fn encrypted_storage() -> (TempDir, Storage) {
+        let dir = TempDir::new("storage-enc");
+        let key = crate::secret::MachineKey::load_or_generate(dir.path())
+            .expect("machine key must initialize");
+        let storage = Storage::open_with_secret(dir.path().join("ipet-test.sqlite3"), Some(key))
+            .expect("encrypted storage must open");
+        (dir, storage)
+    }
+
     fn http_tool_input(name: &str, url: &str) -> ToolConfigInput {
         ToolConfigInput {
             name: name.to_string(),
@@ -992,5 +1040,60 @@ mod tests {
             storage.get_session_value("ipet:test").unwrap().as_deref(),
             Some("v2")
         );
+    }
+
+    #[test]
+    fn encrypted_storage_round_trips_api_key() {
+        let (_dir, storage) = encrypted_storage();
+        let mut settings = LlmSettings::default();
+        settings.api_key = Some("sk-roundtrip-encrypted".into());
+        storage.save_llm_settings(&settings).unwrap();
+
+        // On the wire, the persisted JSON must be encrypted (no plaintext).
+        let raw = storage
+            .get_session_value("llm_settings")
+            .unwrap()
+            .expect("settings row must exist");
+        assert!(
+            !raw.contains("sk-roundtrip-encrypted"),
+            "plaintext api_key leaked into stored JSON: {raw}"
+        );
+        assert!(
+            raw.contains("enc:v1:"),
+            "encrypted envelope marker missing: {raw}"
+        );
+
+        // Reads should return the original plaintext.
+        let back = storage.load_llm_settings().unwrap();
+        assert_eq!(back.api_key.as_deref(), Some("sk-roundtrip-encrypted"));
+    }
+
+    #[test]
+    fn encrypted_storage_passes_through_legacy_plaintext() {
+        // Simulate an old DB by writing settings with the encrypted storage
+        // disabled, then reading them back with encryption enabled.
+        let dir = TempDir::new("legacy-key");
+        let db = dir.path().join("ipet-test.sqlite3");
+        {
+            let plain = Storage::open(&db).unwrap();
+            let mut settings = LlmSettings::default();
+            settings.api_key = Some("sk-legacy".into());
+            plain.save_llm_settings(&settings).unwrap();
+        }
+
+        let key = crate::secret::MachineKey::load_or_generate(dir.path()).unwrap();
+        let enc = Storage::open_with_secret(&db, Some(key)).unwrap();
+        let loaded = enc.load_llm_settings().unwrap();
+        assert_eq!(
+            loaded.api_key.as_deref(),
+            Some("sk-legacy"),
+            "legacy plaintext key must still load"
+        );
+
+        // And once we save it back, it should now be persisted encrypted.
+        enc.save_llm_settings(&loaded).unwrap();
+        let raw = enc.get_session_value("llm_settings").unwrap().unwrap();
+        assert!(raw.contains("enc:v1:"), "save did not upgrade to encrypted form");
+        assert!(!raw.contains("sk-legacy"));
     }
 }
