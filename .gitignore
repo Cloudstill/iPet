@@ -10,3 +10,7 @@ src-tauri/gen/
 iPet-portable/
 iPet-portable.zip
 iPet-release.zip
+
+# Local working notes (not part of the published repo)
+CLAUDE.md
+plan.md
