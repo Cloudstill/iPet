@@ -29,8 +29,8 @@
 ---
 
 <a id="-english"></a>
-<details open>
-<summary><h2>📖 English</h2></summary>
+<details>
+<summary><h2>English</h2></summary>
 
 ### Overview
 
@@ -40,16 +40,16 @@ The project is built with **Tauri 2** (Rust backend + WebView frontend), uses **
 
 ### Highlights
 
-- 🪟 **Transparent, frameless, always-on-top window** — drag anywhere, mouse-passthrough toggle, "compact" floating-head mode.
-- 🐱 **CSS-animated pet character** with `idle / thinking / talking` states; ready to be swapped for a Live2D model later.
-- 💬 **Streaming chat** against any OpenAI-compatible `/chat/completions` endpoint; live-typing thinking timer; Markdown rendering with GFM tables, task lists, code blocks (via `marked` + `DOMPurify`).
-- 🔧 **Function-calling with local tools** — two built-ins (`get_system_status`, `scan_disk`) plus user-defined HTTP tools whose URL/parameters are validated against a JSON Schema.
-- 🛡️ **SSRF-hardened HTTP tools** — URL allow/deny at save time and again at request time (resolves DNS, rejects loopback/private/link-local/CGNAT/ULA, IPv4-mapped IPv6 too); 30 s timeout, 5-redirect cap, 2 MiB response ceiling.
-- 🔒 **Baseline Tauri CSP** — `script-src 'self'`, `object-src 'none'`, `frame-ancestors 'none'`, explicit IPC / asset hosts.
-- 💾 **Local SQLite persistence** — preferences, chat history, tool configs, token usage, system samples, disk-scan cache.
-- 📊 **Token statistics** — per-day, per-model, per-request views; merges the tool-decision call and final streaming reply into one record.
-- 📋 **31 unit tests** covering config validation, disk scanner, storage, and HTTP safety.
-- 📝 **`tracing` instrumentation** — runtime log level via `IPET_LOG` env var (e.g. `IPET_LOG=ipet_lib::tool_dispatcher=trace`).
+- **Transparent, frameless, always-on-top window** — drag anywhere, mouse-passthrough toggle, "compact" floating-head mode.
+- **CSS-animated pet character** with `idle / thinking / talking` states; ready to be swapped for a Live2D model later.
+- **Streaming chat** against any OpenAI-compatible `/chat/completions` endpoint; live-typing thinking timer; Markdown rendering with GFM tables, task lists, code blocks (via `marked` + `DOMPurify`).
+- **Function-calling with local tools** — two built-ins (`get_system_status`, `scan_disk`) plus user-defined HTTP tools whose URL/parameters are validated against a JSON Schema.
+- **SSRF-hardened HTTP tools** — URL allow/deny at save time and again at request time (resolves DNS, rejects loopback/private/link-local/CGNAT/ULA, IPv4-mapped IPv6 too); 30 s timeout, 5-redirect cap, 2 MiB response ceiling.
+- **Baseline Tauri CSP** — `script-src 'self'`, `object-src 'none'`, `frame-ancestors 'none'`, explicit IPC / asset hosts.
+- **Local SQLite persistence** — preferences, chat history, tool configs, token usage, system samples, disk-scan cache.
+- **Token statistics** — per-day, per-model, per-request views; merges the tool-decision call and final streaming reply into one record.
+- **31 unit tests** covering config validation, disk scanner, storage, and HTTP safety.
+- **`tracing` instrumentation** — runtime log level via `IPET_LOG` env var (e.g. `IPET_LOG=ipet_lib::tool_dispatcher=trace`).
 
 ### Quick start
 
@@ -298,19 +298,19 @@ ipet/
 
 ### Roadmap
 
-- ⏳ Secret-store integration (OS keychain / Tauri stronghold) for the API key and HTTP-tool headers.
-- ⏳ Tighter CSP (drop `style-src 'unsafe-inline'`).
-- ⏳ Replace the CSS sprite with a Live2D model (the `src/live2d/` slot is reserved).
-- ⏳ Frontend unit/E2E tests.
-- ⏳ macOS / Linux smoke tests (the code is portable but only Windows is verified today).
+- Secret-store integration (OS keychain / Tauri stronghold) for the API key and HTTP-tool headers.
+- Tighter CSP (drop `style-src 'unsafe-inline'`).
+- Replace the CSS sprite with a Live2D model (the `src/live2d/` slot is reserved).
+- Frontend unit/E2E tests.
+- macOS / Linux smoke tests (the code is portable but only Windows is verified today).
 
 </details>
 
 ---
 
 <a id="-中文"></a>
-<details>
-<summary><h2>📖 中文</h2></summary>
+<details open>
+<summary><h2>中文</h2></summary>
 
 ### 概览
 
@@ -320,16 +320,16 @@ ipet/
 
 ### 亮点
 
-- 🪟 **透明、无边框、默认置顶窗口** —— 任意位置拖拽、鼠标穿透开关、"紧凑"浮头模式。
-- 🐱 **CSS 动画桌宠**，具备 `idle / thinking / talking` 三态；后续可平滑替换为 Live2D 模型。
-- 💬 **流式对话**，对接任何 OpenAI 兼容的 `/chat/completions` 接口；实时打字 + 思考计时器；用 `marked` + `DOMPurify` 渲染 Markdown（GFM 表格、任务列表、代码块）。
-- 🔧 **本地工具的 function calling** —— 两个内置工具（`get_system_status`、`scan_disk`），加上用户自定义的 HTTP 工具（URL / 参数都按 JSON Schema 校验）。
-- 🛡️ **HTTP 工具 SSRF 加固** —— 保存时和发起请求时都做 URL 黑名单校验（DNS 解析后再检查；拒绝 loopback / 私网 / 链路本地 / CGNAT / ULA，含 IPv4-mapped IPv6）；30 秒超时、最多 5 次重定向、响应体 2 MiB 上限。
-- 🔒 **Tauri 基础 CSP** —— `script-src 'self'`、`object-src 'none'`、`frame-ancestors 'none'`，IPC / asset host 显式列出。
-- 💾 **本地 SQLite 持久化** —— 偏好、聊天历史、工具配置、token 使用、系统采样、磁盘扫描缓存。
-- 📊 **Token 统计** —— 按天 / 按模型 / 最近请求拆分；同一次对话里工具决策调用和最终流式回复的 usage 会合并成一条记录。
-- 📋 **31 个单元测试**，覆盖配置校验、磁盘扫描、存储和 HTTP 安全。
-- 📝 **`tracing` 日志埋点** —— 通过 `IPET_LOG` 环境变量实时切日志级别（例如 `IPET_LOG=ipet_lib::tool_dispatcher=trace`）。
+- **透明、无边框、默认置顶窗口** —— 任意位置拖拽、鼠标穿透开关、"紧凑"浮头模式。
+- **CSS 动画桌宠**，具备 `idle / thinking / talking` 三态；后续可平滑替换为 Live2D 模型。
+- **流式对话**，对接任何 OpenAI 兼容的 `/chat/completions` 接口；实时打字 + 思考计时器；用 `marked` + `DOMPurify` 渲染 Markdown（GFM 表格、任务列表、代码块）。
+- **本地工具的 function calling** —— 两个内置工具（`get_system_status`、`scan_disk`），加上用户自定义的 HTTP 工具（URL / 参数都按 JSON Schema 校验）。
+- **HTTP 工具 SSRF 加固** —— 保存时和发起请求时都做 URL 黑名单校验（DNS 解析后再检查；拒绝 loopback / 私网 / 链路本地 / CGNAT / ULA，含 IPv4-mapped IPv6）；30 秒超时、最多 5 次重定向、响应体 2 MiB 上限。
+- **Tauri 基础 CSP** —— `script-src 'self'`、`object-src 'none'`、`frame-ancestors 'none'`，IPC / asset host 显式列出。
+- **本地 SQLite 持久化** —— 偏好、聊天历史、工具配置、token 使用、系统采样、磁盘扫描缓存。
+- **Token 统计** —— 按天 / 按模型 / 最近请求拆分；同一次对话里工具决策调用和最终流式回复的 usage 会合并成一条记录。
+- **31 个单元测试**，覆盖配置校验、磁盘扫描、存储和 HTTP 安全。
+- **`tracing` 日志埋点** —— 通过 `IPET_LOG` 环境变量实时切日志级别（例如 `IPET_LOG=ipet_lib::tool_dispatcher=trace`）。
 
 ### 快速开始
 
@@ -578,11 +578,11 @@ ipet/
 
 ### 路线图
 
-- ⏳ 接入操作系统 keychain / Tauri stronghold，加密保管 API Key 和 HTTP 工具 headers。
-- ⏳ 收紧 CSP（去掉 `style-src 'unsafe-inline'`）。
-- ⏳ 用 Live2D 模型替换 CSS 精灵（`src/live2d/` 目录已预留）。
-- ⏳ 前端单元 / E2E 测试。
-- ⏳ macOS / Linux 冒烟测试（代码本身可移植，但目前仅在 Windows 上验证过）。
+- 接入操作系统 keychain / Tauri stronghold，加密保管 API Key 和 HTTP 工具 headers。
+- 收紧 CSP（去掉 `style-src 'unsafe-inline'`）。
+- 用 Live2D 模型替换 CSS 精灵（`src/live2d/` 目录已预留）。
+- 前端单元 / E2E 测试。
+- macOS / Linux 冒烟测试（代码本身可移植，但目前仅在 Windows 上验证过）。
 
 </details>
 
