@@ -85,6 +85,7 @@ impl ToolDispatcher {
                     path: args.path,
                     max_depth: args.max_depth,
                     max_children: args.max_children,
+                    max_duration_secs: None,
                 };
                 let result = tokio::task::spawn_blocking(move || disk_scanner::scan_path(request))
                     .await

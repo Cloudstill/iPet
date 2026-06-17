@@ -11,10 +11,11 @@ mod tool_dispatcher;
 
 use app_error::{public_error, AppError, AppResult};
 use config::{LlmSettingsInput, LlmSettingsStatus};
-use disk_scanner::{DiskScanRequest, DiskScanResult};
+use disk_scanner::{DiskScanRequest, DiskScanResult, ScanCancellation};
 use llm_client::{ChatRequest, ChatTurnResult, LlmClient};
 use serde::Serialize;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex as StdMutex};
 use storage::{ChatRecord, Storage, TokenUsageStats, ToolConfig, ToolConfigInput};
 use system_monitor::{SystemMonitor, SystemSnapshot};
 use tauri::{Emitter, LogicalSize, Manager, State, Window};
@@ -24,6 +25,9 @@ use tool_dispatcher::ToolDispatcher;
 pub struct AppState {
     storage: Arc<Storage>,
     system: Arc<Mutex<SystemMonitor>>,
+    /// Active disk scans keyed by caller-provided id so they can be cancelled
+    /// mid-flight. Entries are removed when the scan task exits.
+    scans: Arc<StdMutex<HashMap<String, ScanCancellation>>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -32,6 +36,13 @@ struct ChatStreamEvent {
     request_id: String,
     kind: String,
     content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiskScanProgress {
+    scan_id: String,
+    scanned_entries: u64,
 }
 
 #[tauri::command]
@@ -64,20 +75,72 @@ async fn get_system_status(
 
 #[tauri::command]
 async fn scan_disk(
+    window: Window,
+    scan_id: Option<String>,
     request: DiskScanRequest,
     state: State<'_, AppState>,
 ) -> Result<DiskScanResult, String> {
-    let result = tokio::task::spawn_blocking(move || disk_scanner::scan_path(request))
-        .await
-        .map_err(|error| error.to_string())
-        .and_then(|result| result.map_err(public_error))?;
+    let scan_id = scan_id.unwrap_or_else(|| format!("scan-{}", uuid_like()));
+    let cancellation = ScanCancellation::new();
+    {
+        let mut scans = state
+            .scans
+            .lock()
+            .map_err(|_| "scan registry poisoned".to_string())?;
+        scans.insert(scan_id.clone(), cancellation.clone());
+    }
 
+    // Build a progress emitter that ships the running entry count to the
+    // frontend on the `disk-scan-progress` channel. The throttled callback in
+    // disk_scanner makes sure we don't drown the IPC bus.
+    let progress_window = window.clone();
+    let progress_id = scan_id.clone();
+    let on_progress: Box<dyn Fn(u64) + Send + Sync> = Box::new(move |scanned_entries| {
+        let _ = progress_window.emit(
+            "disk-scan-progress",
+            DiskScanProgress {
+                scan_id: progress_id.clone(),
+                scanned_entries,
+            },
+        );
+    });
+
+    let scans_for_cleanup = state.scans.clone();
+    let cleanup_id = scan_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        disk_scanner::scan_path_with(request, cancellation, Some(on_progress))
+    })
+    .await
+    .map_err(|error| error.to_string())
+    .and_then(|result| result.map_err(public_error));
+
+    // Drop the cancellation handle regardless of outcome so the registry
+    // doesn't grow over a long session.
+    if let Ok(mut scans) = scans_for_cleanup.lock() {
+        scans.remove(&cleanup_id);
+    }
+
+    let result = result?;
     if let Ok(json) = serde_json::to_string(&result) {
         if let Err(err) = state.storage.cache_disk_scan(&result.root.path, &json) {
             tracing::warn!(error = %err, path = %result.root.path, "failed to cache disk scan");
         }
     }
     Ok(result)
+}
+
+#[tauri::command]
+fn cancel_disk_scan(scan_id: String, state: State<'_, AppState>) -> Result<bool, String> {
+    let scans = state
+        .scans
+        .lock()
+        .map_err(|_| "scan registry poisoned".to_string())?;
+    let Some(handle) = scans.get(&scan_id) else {
+        return Ok(false);
+    };
+    handle.cancel();
+    tracing::info!(scan_id = %scan_id, "disk scan cancellation requested");
+    Ok(true)
 }
 
 #[tauri::command]
@@ -338,6 +401,17 @@ fn emit_chat_event(window: &Window, request_id: &str, kind: &str, content: &str)
         .map_err(|error| AppError::Model(error.to_string()))
 }
 
+/// Very small unique-id helper. We don't pull `uuid` just for this — combining
+/// the current nanoseconds with the thread id is more than enough to keep the
+/// scan registry's HashMap keys distinct across concurrent invocations.
+fn uuid_like() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{nanos:x}")
+}
+
 /// Initialize the global tracing subscriber once. Respects the `IPET_LOG`
 /// env var (e.g. `IPET_LOG=ipet_lib=debug,reqwest=info`); defaults to INFO.
 fn init_tracing() {
@@ -379,7 +453,11 @@ pub fn run() {
             }
             let system = Arc::new(Mutex::new(SystemMonitor::new()));
             tracing::info!(data_dir = %data_dir.display(), "iPet backend initialized");
-            app.manage(AppState { storage, system });
+            app.manage(AppState {
+                storage,
+                system,
+                scans: Arc::new(StdMutex::new(HashMap::new())),
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -387,6 +465,7 @@ pub fn run() {
             save_llm_settings,
             get_system_status,
             scan_disk,
+            cancel_disk_scan,
             get_recent_messages,
             list_tools,
             save_tool,

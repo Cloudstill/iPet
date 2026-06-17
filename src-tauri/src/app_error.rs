@@ -18,6 +18,8 @@ pub enum AppError {
     InvalidInput(String),
     #[error("model error: {0}")]
     Model(String),
+    #[error("操作已取消")]
+    Cancelled,
 }
 
 pub fn public_error(error: AppError) -> String {

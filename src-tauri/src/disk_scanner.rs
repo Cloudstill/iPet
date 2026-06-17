@@ -3,8 +3,9 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -13,6 +14,11 @@ pub struct DiskScanRequest {
     pub path: String,
     pub max_depth: Option<usize>,
     pub max_children: Option<usize>,
+    /// Soft deadline. Once exceeded, in-flight scan nodes return early with
+    /// AppError::Cancelled — defaults to 60 s. Pass `None` (or 0) for the
+    /// default.
+    #[serde(default)]
+    pub max_duration_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +49,33 @@ struct ScanOptions {
     max_children: usize,
 }
 
+/// Shared scan state — read by every recursive worker via &.
+struct ScanContext {
+    options: ScanOptions,
+    scanned_entries: AtomicU64,
+    cancel: Arc<AtomicBool>,
+    deadline: Instant,
+    on_progress: Option<Box<dyn Fn(u64) + Send + Sync>>,
+}
+
+impl ScanContext {
+    fn should_stop(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed) || Instant::now() >= self.deadline
+    }
+
+    fn note_entry(&self) {
+        let prev = self.scanned_entries.fetch_add(1, Ordering::Relaxed);
+        // Throttle progress callbacks to every 256 entries so an attached
+        // listener doesn't get drowned during a tight loop.
+        if let Some(cb) = &self.on_progress {
+            let now = prev + 1;
+            if now % 256 == 0 {
+                cb(now);
+            }
+        }
+    }
+}
+
 impl DiskScanRequest {
     fn options(&self) -> ScanOptions {
         ScanOptions {
@@ -50,9 +83,44 @@ impl DiskScanRequest {
             max_children: self.max_children.unwrap_or(12).clamp(1, 64),
         }
     }
+
+    fn deadline(&self, started: Instant) -> Instant {
+        let secs = self.max_duration_secs.unwrap_or(0);
+        let secs = if secs == 0 { 60 } else { secs.min(600) };
+        started + Duration::from_secs(secs)
+    }
+}
+
+/// Cancellation handle returned by callers that want to abort an in-flight
+/// scan. Cheap to clone; flipping it once stops every concurrent recursion.
+#[derive(Debug, Clone, Default)]
+pub struct ScanCancellation {
+    flag: Arc<AtomicBool>,
+}
+
+impl ScanCancellation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.flag.store(true, Ordering::Relaxed);
+    }
+
+    pub fn handle(&self) -> Arc<AtomicBool> {
+        self.flag.clone()
+    }
 }
 
 pub fn scan_path(request: DiskScanRequest) -> AppResult<DiskScanResult> {
+    scan_path_with(request, ScanCancellation::new(), None)
+}
+
+pub fn scan_path_with(
+    request: DiskScanRequest,
+    cancel: ScanCancellation,
+    on_progress: Option<Box<dyn Fn(u64) + Send + Sync>>,
+) -> AppResult<DiskScanResult> {
     let root = PathBuf::from(request.path.trim());
     if !root.exists() {
         return Err(AppError::InvalidInput(format!(
@@ -61,27 +129,33 @@ pub fn scan_path(request: DiskScanRequest) -> AppResult<DiskScanResult> {
         )));
     }
 
-    let options = request.options();
     let started = Instant::now();
-    let scanned_entries = AtomicU64::new(0);
-    let (root, truncated) = scan_node(&root, 0, &options, &scanned_entries)?;
+    let deadline = request.deadline(started);
+    let options = request.options();
+    let ctx = ScanContext {
+        options,
+        scanned_entries: AtomicU64::new(0),
+        cancel: cancel.handle(),
+        deadline,
+        on_progress,
+    };
+
+    let (root, truncated) = scan_node(&root, 0, &ctx)?;
 
     Ok(DiskScanResult {
         root,
-        scanned_entries: scanned_entries.load(Ordering::Relaxed),
+        scanned_entries: ctx.scanned_entries.load(Ordering::Relaxed),
         elapsed_ms: started.elapsed().as_millis(),
         truncated,
         scanned_at: chrono::Utc::now().to_rfc3339(),
     })
 }
 
-fn scan_node(
-    path: &Path,
-    depth: usize,
-    options: &ScanOptions,
-    scanned_entries: &AtomicU64,
-) -> AppResult<(DiskNode, bool)> {
-    scanned_entries.fetch_add(1, Ordering::Relaxed);
+fn scan_node(path: &Path, depth: usize, ctx: &ScanContext) -> AppResult<(DiskNode, bool)> {
+    if ctx.should_stop() {
+        return Err(AppError::Cancelled);
+    }
+    ctx.note_entry();
     let metadata = fs::symlink_metadata(path)?;
     let name = path
         .file_name()
@@ -119,8 +193,8 @@ fn scan_node(
         ));
     }
 
-    if depth >= options.max_depth {
-        let summary = summarize_dir(path, scanned_entries);
+    if depth >= ctx.options.max_depth {
+        let summary = summarize_dir(path, ctx);
         return Ok((
             DiskNode {
                 name,
@@ -142,8 +216,17 @@ fn scan_node(
 
     let child_results = entries
         .par_iter()
-        .filter_map(|entry| scan_node(entry, depth + 1, options, scanned_entries).ok())
+        .filter_map(|entry| {
+            if ctx.should_stop() {
+                return None;
+            }
+            scan_node(entry, depth + 1, ctx).ok()
+        })
         .collect::<Vec<_>>();
+
+    if ctx.should_stop() {
+        return Err(AppError::Cancelled);
+    }
 
     let mut children = child_results
         .iter()
@@ -156,8 +239,8 @@ fn scan_node(
     let dir_count = 1 + children.iter().map(|child| child.dir_count).sum::<u64>();
 
     children.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
-    if children.len() > options.max_children {
-        children.truncate(options.max_children);
+    if children.len() > ctx.options.max_children {
+        children.truncate(ctx.options.max_children);
         truncated = true;
     }
 
@@ -182,10 +265,13 @@ struct DirSummary {
     dir_count: u64,
 }
 
-fn summarize_dir(path: &Path, scanned_entries: &AtomicU64) -> DirSummary {
+fn summarize_dir(path: &Path, ctx: &ScanContext) -> DirSummary {
     let mut summary = DirSummary::default();
     for entry in WalkDir::new(path).follow_links(false).into_iter().filter_map(Result::ok) {
-        scanned_entries.fetch_add(1, Ordering::Relaxed);
+        if ctx.should_stop() {
+            break;
+        }
+        ctx.note_entry();
         match entry.metadata() {
             Ok(metadata) if metadata.is_file() => {
                 summary.file_count += 1;
@@ -227,6 +313,7 @@ mod tests {
             path: path.display().to_string(),
             max_depth: depth,
             max_children: children,
+            max_duration_secs: None,
         }
     }
 
@@ -302,6 +389,7 @@ mod tests {
             path: "Z:/no/such/path/exists/here/iPet/test".to_string(),
             max_depth: None,
             max_children: None,
+            max_duration_secs: None,
         };
         let err = scan_path(request).expect_err("missing path must error");
         assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
@@ -313,6 +401,7 @@ mod tests {
             path: ".".to_string(),
             max_depth: Some(9999),
             max_children: Some(9999),
+            max_duration_secs: None,
         };
         let opts = request.options();
         assert_eq!(opts.max_depth, 12);
@@ -322,9 +411,40 @@ mod tests {
             path: ".".to_string(),
             max_depth: Some(0),
             max_children: Some(0),
+            max_duration_secs: None,
         };
         let opts = request.options();
         assert_eq!(opts.max_depth, 1);
         assert_eq!(opts.max_children, 1);
+    }
+
+    #[test]
+    fn cancellation_aborts_scan() {
+        let dir = build_tree();
+        let cancel = ScanCancellation::new();
+        cancel.cancel(); // pre-cancelled — first call into scan_node bails
+        let err = scan_path_with(request(dir.path(), Some(4), Some(12)), cancel, None)
+            .expect_err("pre-cancelled scan must error");
+        assert!(matches!(err, AppError::Cancelled), "got {err:?}");
+    }
+
+    #[test]
+    fn progress_callback_fires_for_large_trees() {
+        let dir = TempDir::new("prog");
+        // Need at least 256 entries to trigger the throttled callback.
+        for i in 0..300 {
+            fs::write(dir.path().join(format!("f{i}.bin")), b"x").unwrap();
+        }
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let probe = seen.clone();
+        let cb: Box<dyn Fn(u64) + Send + Sync> = Box::new(move |n| {
+            probe.store(n, std::sync::atomic::Ordering::Relaxed);
+        });
+        scan_path_with(request(dir.path(), Some(2), Some(400)), ScanCancellation::new(), Some(cb))
+            .unwrap();
+        assert!(
+            seen.load(std::sync::atomic::Ordering::Relaxed) >= 256,
+            "progress callback should have fired"
+        );
     }
 }
