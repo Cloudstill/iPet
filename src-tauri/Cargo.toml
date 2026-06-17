@@ -13,19 +13,18 @@ crate-type = ["rlib"]
 tauri-build = { version = "2.6.2", features = [] }
 
 [dependencies]
+ipet-tool-scan-disk = { workspace = true }
+ipet-tool-get-system-status = { workspace = true }
 base64 = "0.22.1"
 chacha20poly1305 = "0.10.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde"] }
 futures-util = "0.3.32"
-rayon = "1.12.0"
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
-sysinfo = "0.32.1"
 tauri = { version = "2.11.2", features = [] }
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1.42"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
-walkdir = "2.5.0"

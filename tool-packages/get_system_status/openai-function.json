@@ -10,6 +10,7 @@
           "type": "integer",
           "minimum": 3,
           "maximum": 30,
+          "default": 10,
           "description": "返回的高占用进程数量。"
         }
       },
@@ -17,4 +18,3 @@
     }
   }
 }
-

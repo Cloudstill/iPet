@@ -32,23 +32,25 @@
 
 ## 源码
 
-本包包含 Rust 源码：
+本包是一个独立 Cargo crate（`ipet-tool-scan-disk`），既是 iPet 运行时通过 path 依赖引入的真源，也可单独分发：
 
 ```text
 rust/
 ├── Cargo.toml
-├── INTEGRATION.md
 └── src/
     ├── app_error.rs
     ├── disk_scanner.rs
-    └── lib.rs
+    ├── lib.rs
+    └── testutil.rs
 ```
 
 核心入口：
 
-- `rust/src/disk_scanner.rs`：目录递归扫描实现
+- `rust/src/disk_scanner.rs`：目录递归扫描实现（取消、进度回调、软超时）
 - `rust/src/app_error.rs`：独立包所需的最小错误类型
-- `rust/src/lib.rs`：独立包导出和 `run_tool(path, max_depth, max_children)` 示例入口
+- `rust/src/lib.rs`：包导出与 `run_tool(path, max_depth, max_children)` 示例入口
+
+依赖：`rayon`、`walkdir`、`serde`、`serde_json`、`chrono`、`thiserror`。
 
 独立调用示例：
 
@@ -102,6 +104,6 @@ let json = ipet_tool_scan_disk::run_tool("C:\\Users", Some(4), Some(12))?;
 ## 接入说明
 
 1. 将 `tool.json` 复制到工具注册表或导入流程。
-2. 将 `rust/src/disk_scanner.rs` 集成到宿主 Rust 后端，或直接使用 `rust/` 作为独立 crate。
-3. 将 `openai-function.json` 的内容加入 OpenAI 兼容接口的 `tools` 列表。
+2. iPet 已通过 workspace path 依赖直接使用 `rust/` crate；其他宿主可把 `rust/` 作为独立 crate 引入。
+3. `openai-function.json` 由 `tool.json` 派生（`npm run sync:tools` 重新生成），将其内容加入 OpenAI 兼容接口的 `tools` 列表。
 4. 宿主调度器收到 `scan_disk` 调用后执行 `scan_path(...)` 或 `run_tool(...)`。

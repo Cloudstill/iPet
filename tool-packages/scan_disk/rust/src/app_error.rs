@@ -10,5 +10,6 @@ pub enum AppError {
     Json(#[from] serde_json::Error),
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    #[error("操作已取消")]
+    Cancelled,
 }
-

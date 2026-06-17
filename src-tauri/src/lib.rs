@@ -1,11 +1,9 @@
 mod app_error;
 mod config;
-mod disk_scanner;
 mod http_safety;
 mod llm_client;
 mod secret;
 mod storage;
-mod system_monitor;
 #[cfg(test)]
 mod testutil;
 mod tool_dispatcher;
@@ -13,16 +11,31 @@ mod tool_package;
 
 use app_error::{public_error, AppError, AppResult};
 use config::{LlmSettingsInput, LlmSettingsStatus};
-use disk_scanner::{DiskScanRequest, DiskScanResult, ScanCancellation};
+use ipet_tool_get_system_status::{SystemMonitor, SystemSnapshot};
+use ipet_tool_scan_disk::{self as disk_scanner, DiskScanRequest, DiskScanResult, ScanCancellation};
 use llm_client::{ChatRequest, ChatTurnResult, LlmClient};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use storage::{ChatRecord, Storage, TokenUsageStats, ToolConfig, ToolConfigInput};
-use system_monitor::{SystemMonitor, SystemSnapshot};
 use tauri::{Emitter, LogicalSize, Manager, State, Window};
 use tokio::sync::Mutex;
 use tool_dispatcher::ToolDispatcher;
+
+// The builtin tools live in external crates (`ipet-tool-*`) with their own
+// minimal `AppError`. Map them into the host error type so `?` works across
+// the crate boundary without forcing the tool crates to depend on
+// rusqlite/reqwest.
+impl From<ipet_tool_scan_disk::AppError> for AppError {
+    fn from(err: ipet_tool_scan_disk::AppError) -> Self {
+        match err {
+            ipet_tool_scan_disk::AppError::Io(e) => AppError::Io(e),
+            ipet_tool_scan_disk::AppError::Json(e) => AppError::Json(e),
+            ipet_tool_scan_disk::AppError::InvalidInput(msg) => AppError::InvalidInput(msg),
+            ipet_tool_scan_disk::AppError::Cancelled => AppError::Cancelled,
+        }
+    }
+}
 
 pub struct AppState {
     storage: Arc<Storage>,
@@ -114,7 +127,7 @@ async fn scan_disk(
     })
     .await
     .map_err(|error| error.to_string())
-    .and_then(|result| result.map_err(public_error));
+    .and_then(|result| result.map_err(|err| public_error(err.into())));
 
     // Drop the cancellation handle regardless of outcome so the registry
     // doesn't grow over a long session.

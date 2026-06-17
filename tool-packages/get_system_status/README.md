@@ -33,12 +33,11 @@
 
 ## 源码
 
-本包包含 Rust 源码：
+本包是一个独立 Cargo crate（`ipet-tool-get-system-status`），既是 iPet 运行时通过 path 依赖引入的真源，也可单独分发：
 
 ```text
 rust/
 ├── Cargo.toml
-├── INTEGRATION.md
 └── src/
     ├── lib.rs
     └── system_monitor.rs
@@ -47,7 +46,9 @@ rust/
 核心入口：
 
 - `rust/src/system_monitor.rs`：系统监控实现
-- `rust/src/lib.rs`：独立包导出和 `run_tool(process_limit)` 示例入口
+- `rust/src/lib.rs`：包导出与 `run_tool(process_limit)` 示例入口
+
+依赖：`sysinfo`、`serde`、`serde_json`、`chrono`。
 
 独立调用示例：
 
@@ -85,6 +86,6 @@ let json = ipet_tool_get_system_status::run_tool(Some(10))?;
 ## 接入说明
 
 1. 将 `tool.json` 复制到工具注册表或导入流程。
-2. 将 `rust/src/system_monitor.rs` 集成到宿主 Rust 后端，或直接使用 `rust/` 作为独立 crate。
-3. 将 `openai-function.json` 的内容加入 OpenAI 兼容接口的 `tools` 列表。
+2. iPet 已通过 workspace path 依赖直接使用 `rust/` crate；其他宿主可把 `rust/` 作为独立 crate 引入。
+3. `openai-function.json` 由 `tool.json` 派生（`npm run sync:tools` 重新生成），将其内容加入 OpenAI 兼容接口的 `tools` 列表。
 4. 宿主调度器收到 `get_system_status` 调用后执行 `SystemMonitor::snapshot(...)` 或 `run_tool(...)`。
