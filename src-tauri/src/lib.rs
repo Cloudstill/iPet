@@ -365,6 +365,18 @@ pub fn run() {
                     return Err(Box::new(err));
                 }
             };
+            // One-shot retention pass on startup. Failures are non-fatal —
+            // the app still works, we just log so persistent failures show up.
+            match storage.prune_old() {
+                Ok(report) => tracing::info!(
+                    chat_removed = report.chat_removed,
+                    tokens_removed = report.tokens_removed,
+                    samples_removed = report.samples_removed,
+                    disk_removed = report.disk_removed,
+                    "data retention sweep complete"
+                ),
+                Err(err) => tracing::warn!(error = %err, "data retention sweep failed"),
+            }
             let system = Arc::new(Mutex::new(SystemMonitor::new()));
             tracing::info!(data_dir = %data_dir.display(), "iPet backend initialized");
             app.manage(AppState { storage, system });

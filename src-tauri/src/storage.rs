@@ -98,6 +98,36 @@ pub struct Storage {
     conn: Mutex<Connection>,
 }
 
+/// Configurable retention thresholds. The defaults trim everything aggressively
+/// to keep the SQLite file small; consumers can override per-call via
+/// `Storage::prune_with_policy`.
+#[derive(Debug, Clone, Copy)]
+pub struct RetentionPolicy {
+    pub chat_keep: usize,
+    pub token_usage_days: u32,
+    pub system_samples_days: u32,
+    pub disk_scan_days: u32,
+}
+
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        Self {
+            chat_keep: 2000,
+            token_usage_days: 90,
+            system_samples_days: 30,
+            disk_scan_days: 30,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RetentionReport {
+    pub chat_removed: usize,
+    pub tokens_removed: usize,
+    pub samples_removed: usize,
+    pub disk_removed: usize,
+}
+
 impl Storage {
     pub fn open(path: impl AsRef<Path>) -> AppResult<Self> {
         let path = path.as_ref().to_path_buf();
@@ -116,6 +146,62 @@ impl Storage {
 
     pub fn db_path(&self) -> PathBuf {
         self.db_path.clone()
+    }
+
+    /// Trim historical rows so the SQLite file doesn't grow forever. Safe to
+    /// call on startup — runs as a few small `DELETE`s with simple ordering.
+    ///
+    /// Retention policy (chosen to keep the file under a few MB even after
+    /// heavy use; tune `RetentionPolicy` if you want longer history):
+    /// - chat_messages: keep the most recent 2000 rows
+    /// - token_usage: drop rows older than 90 days
+    /// - system_samples: drop rows older than 30 days
+    /// - disk_scan_cache: drop entries older than 30 days
+    pub fn prune_old(&self) -> AppResult<RetentionReport> {
+        self.prune_with_policy(RetentionPolicy::default())
+    }
+
+    pub fn prune_with_policy(&self, policy: RetentionPolicy) -> AppResult<RetentionReport> {
+        let conn = self.lock()?;
+        let now = Utc::now();
+
+        let chat_removed = conn.execute(
+            "DELETE FROM chat_messages
+             WHERE id NOT IN (
+                 SELECT id FROM chat_messages
+                 ORDER BY id DESC
+                 LIMIT ?1
+             )",
+            params![policy.chat_keep as i64],
+        )?;
+
+        let token_cutoff = (now - chrono::Duration::days(policy.token_usage_days as i64))
+            .to_rfc3339();
+        let tokens_removed = conn.execute(
+            "DELETE FROM token_usage WHERE created_at < ?1",
+            params![token_cutoff],
+        )?;
+
+        let samples_cutoff = (now - chrono::Duration::days(policy.system_samples_days as i64))
+            .to_rfc3339();
+        let samples_removed = conn.execute(
+            "DELETE FROM system_samples WHERE created_at < ?1",
+            params![samples_cutoff],
+        )?;
+
+        let disk_cutoff = (now - chrono::Duration::days(policy.disk_scan_days as i64))
+            .to_rfc3339();
+        let disk_removed = conn.execute(
+            "DELETE FROM disk_scan_cache WHERE scanned_at < ?1",
+            params![disk_cutoff],
+        )?;
+
+        Ok(RetentionReport {
+            chat_removed,
+            tokens_removed,
+            samples_removed,
+            disk_removed,
+        })
     }
 
     fn migrate(&self) -> AppResult<()> {
@@ -855,5 +941,56 @@ mod tests {
         assert!(!is_valid_tool_name("has space"));
         assert!(is_valid_tool_name("_ok"));
         assert!(is_valid_tool_name("get_status_v2"));
+    }
+
+    #[test]
+    fn prune_caps_chat_history_to_policy() {
+        let (_dir, storage) = fresh_storage();
+        for i in 0..30 {
+            storage.save_chat_message("user", &format!("msg-{i}")).unwrap();
+        }
+        let policy = RetentionPolicy {
+            chat_keep: 10,
+            ..RetentionPolicy::default()
+        };
+        let report = storage.prune_with_policy(policy).unwrap();
+        assert_eq!(report.chat_removed, 20);
+        let recent = storage.recent_messages(100).unwrap();
+        assert_eq!(recent.len(), 10);
+        // recent_messages reverses inside, so it's chronological — oldest of
+        // the survivors should be msg-20, newest msg-29.
+        assert_eq!(recent.first().unwrap().content, "msg-20");
+        assert_eq!(recent.last().unwrap().content, "msg-29");
+    }
+
+    #[test]
+    fn prune_keeps_recent_token_usage() {
+        let (_dir, storage) = fresh_storage();
+        // Fresh inserts get Utc::now() timestamps, well within any sane
+        // retention window; nothing should be removed.
+        storage
+            .record_token_usage("r1", "model", 1, 1, 2, 0)
+            .unwrap();
+        let report = storage.prune_old().unwrap();
+        assert_eq!(report.tokens_removed, 0);
+        let stats = storage.token_stats().unwrap();
+        assert_eq!(stats.requests, 1);
+    }
+
+    #[test]
+    fn session_value_round_trips() {
+        let (_dir, storage) = fresh_storage();
+        assert!(storage.get_session_value("missing").unwrap().is_none());
+        storage.set_session_value("ipet:test", "hello,world").unwrap();
+        assert_eq!(
+            storage.get_session_value("ipet:test").unwrap().as_deref(),
+            Some("hello,world")
+        );
+        // Re-setting overwrites instead of failing.
+        storage.set_session_value("ipet:test", "v2").unwrap();
+        assert_eq!(
+            storage.get_session_value("ipet:test").unwrap().as_deref(),
+            Some("v2")
+        );
     }
 }
