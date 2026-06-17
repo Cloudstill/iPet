@@ -56,11 +56,16 @@ impl ToolDispatcher {
             return Err(AppError::InvalidInput(format!("工具未启用: {name}")));
         }
 
-        match tool.kind.as_str() {
+        tracing::debug!(tool = %name, kind = %tool.kind, "dispatching tool");
+        let result = match tool.kind.as_str() {
             "builtin" => self.dispatch_builtin(name, arguments).await,
             "http" => self.dispatch_http(&tool, arguments).await,
             other => Err(AppError::InvalidInput(format!("不支持的工具类型: {other}"))),
+        };
+        if let Err(err) = &result {
+            tracing::warn!(tool = %name, error = %err, "tool dispatch failed");
         }
+        result
     }
 
     async fn dispatch_builtin(&self, name: &str, arguments: &str) -> AppResult<String> {

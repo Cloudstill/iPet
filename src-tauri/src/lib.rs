@@ -55,7 +55,9 @@ async fn get_system_status(
     let mut monitor = state.system.lock().await;
     let snapshot = monitor.snapshot(process_limit.unwrap_or(10).clamp(3, 30));
     if let Ok(json) = serde_json::to_string(&snapshot) {
-        let _ = state.storage.cache_system_sample(&json);
+        if let Err(err) = state.storage.cache_system_sample(&json) {
+            tracing::warn!(error = %err, "failed to cache system sample");
+        }
     }
     Ok(snapshot)
 }
@@ -71,7 +73,9 @@ async fn scan_disk(
         .and_then(|result| result.map_err(public_error))?;
 
     if let Ok(json) = serde_json::to_string(&result) {
-        let _ = state.storage.cache_disk_scan(&result.root.path, &json);
+        if let Err(err) = state.storage.cache_disk_scan(&result.root.path, &json) {
+            tracing::warn!(error = %err, path = %result.root.path, "failed to cache disk scan");
+        }
     }
     Ok(result)
 }
@@ -293,13 +297,35 @@ fn emit_chat_event(window: &Window, request_id: &str, kind: &str, content: &str)
         .map_err(|error| AppError::Model(error.to_string()))
 }
 
+/// Initialize the global tracing subscriber once. Respects the `IPET_LOG`
+/// env var (e.g. `IPET_LOG=ipet_lib=debug,reqwest=info`); defaults to INFO.
+fn init_tracing() {
+    use tracing_subscriber::{fmt, EnvFilter};
+    let filter = EnvFilter::try_from_env("IPET_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    // `try_init` is best-effort: if a host (tests, embedding) already set a
+    // subscriber we silently keep theirs instead of panicking.
+    let _ = fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .with_thread_ids(false)
+        .try_init();
+}
+
 pub fn run() {
+    init_tracing();
     tauri::Builder::default()
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
-            let storage = Arc::new(Storage::open(data_dir.join("ipet.sqlite3"))?);
+            let storage = match Storage::open(data_dir.join("ipet.sqlite3")) {
+                Ok(s) => Arc::new(s),
+                Err(err) => {
+                    tracing::error!(error = %err, path = %data_dir.display(), "failed to open storage");
+                    return Err(Box::new(err));
+                }
+            };
             let system = Arc::new(Mutex::new(SystemMonitor::new()));
+            tracing::info!(data_dir = %data_dir.display(), "iPet backend initialized");
             app.manage(AppState { storage, system });
             Ok(())
         })
