@@ -7,6 +7,8 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
@@ -19,6 +21,8 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.0",
     "esbuild": "^0.28.1",
-    "vite": "^8.0.16"
+    "jsdom": "^25.0.1",
+    "vite": "^8.0.16",
+    "vitest": "^2.1.9"
   }
 }
