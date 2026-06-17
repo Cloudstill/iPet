@@ -1,11 +1,16 @@
 use crate::app_error::{AppError, AppResult};
 use crate::disk_scanner::{self, DiskScanRequest};
+use crate::http_safety::{
+    validate_url_runtime, HTTP_MAX_REDIRECTS, HTTP_MAX_RESPONSE_BYTES, HTTP_TIMEOUT_SECS,
+};
 use crate::storage::{Storage, ToolConfig};
 use crate::system_monitor::SystemMonitor;
+use futures_util::StreamExt;
 use reqwest::Method;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
@@ -17,10 +22,18 @@ pub struct ToolDispatcher {
 
 impl ToolDispatcher {
     pub fn new(system: Arc<Mutex<SystemMonitor>>, storage: Arc<Storage>) -> Self {
+        // A dedicated client for tool HTTP traffic with conservative timeouts
+        // and a redirect cap. Falls back to the default client if the
+        // builder rejects our config (which it never does for these flags).
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+            .redirect(reqwest::redirect::Policy::limited(HTTP_MAX_REDIRECTS))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             system,
             storage,
-            http: reqwest::Client::new(),
+            http,
         }
     }
 
@@ -89,9 +102,14 @@ impl ToolDispatcher {
             .to_ascii_uppercase()
             .parse::<Method>()
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        // Re-validate at runtime: rejects malformed URLs and any host that
+        // resolves to a loopback / private / link-local address. This is
+        // belt-and-suspenders with the save-time check, in case the DB was
+        // edited externally or DNS shifts after save.
+        let url = validate_url_runtime(&http.url).await?;
         let args = serde_json::from_str::<Value>(arguments).unwrap_or_else(|_| json!({}));
 
-        let mut request = self.http.request(method.clone(), &http.url);
+        let mut request = self.http.request(method.clone(), url);
         for header in &http.headers {
             if !header.key.trim().is_empty() {
                 request = request.header(header.key.trim(), header.value.trim());
@@ -112,13 +130,31 @@ impl ToolDispatcher {
 
         let response = request.send().await?.error_for_status()?;
         let status = response.status().as_u16();
-        let text = response.text().await?;
+        let body = read_capped_body(response).await?;
         Ok(json!({
             "status": status,
-            "body": text
+            "body": body
         })
         .to_string())
     }
+}
+
+/// Stream the response body and abort if it exceeds the configured cap so a
+/// hostile or buggy upstream cannot exhaust our memory.
+async fn read_capped_body(response: reqwest::Response) -> AppResult<String> {
+    let mut stream = response.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if buf.len().saturating_add(chunk.len()) > HTTP_MAX_RESPONSE_BYTES {
+            return Err(AppError::InvalidInput(format!(
+                "HTTP 响应体超过 {} 字节上限",
+                HTTP_MAX_RESPONSE_BYTES
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 fn tool_definition(tool: ToolConfig) -> Value {

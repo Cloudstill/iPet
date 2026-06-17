@@ -660,11 +660,7 @@ fn validate_tool_input(input: &ToolConfigInput) -> AppResult<()> {
             "HTTP 工具 method 仅支持 GET/POST/PUT/PATCH".to_string(),
         ));
     }
-    if !(http.url.starts_with("http://") || http.url.starts_with("https://")) {
-        return Err(AppError::InvalidInput(
-            "HTTP 工具 URL 必须以 http:// 或 https:// 开头".to_string(),
-        ));
-    }
+    crate::http_safety::validate_url_syntax(&http.url)?;
     Ok(())
 }
 

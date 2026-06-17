@@ -1,6 +1,7 @@
 mod app_error;
 mod config;
 mod disk_scanner;
+mod http_safety;
 mod llm_client;
 mod storage;
 mod system_monitor;
