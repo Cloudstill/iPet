@@ -127,3 +127,123 @@ impl LlmSettingsInput {
 fn default_auto_system_check_interval_minutes() -> u64 {
     10
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn defaults() -> LlmSettings {
+        LlmSettings::default()
+    }
+
+    #[test]
+    fn default_validates_ok() {
+        defaults().validate_public_fields().expect("defaults must validate");
+    }
+
+    #[test]
+    fn normalized_base_url_strips_trailing_slash_and_whitespace() {
+        let mut s = defaults();
+        s.base_url = "  https://api.example.com/v1///   ".to_string();
+        assert_eq!(s.normalized_base_url(), "https://api.example.com/v1");
+    }
+
+    #[test]
+    fn validate_rejects_blank_base_url() {
+        let mut s = defaults();
+        s.base_url = "   /".to_string();
+        let err = s.validate_public_fields().unwrap_err();
+        assert!(err.contains("Base URL"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_blank_model() {
+        let mut s = defaults();
+        s.model = "   ".to_string();
+        assert!(s.validate_public_fields().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_temperature() {
+        let mut s = defaults();
+        s.temperature = -0.1;
+        assert!(s.validate_public_fields().is_err());
+        s.temperature = 2.5;
+        assert!(s.validate_public_fields().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_context() {
+        let mut s = defaults();
+        s.max_context_messages = 2;
+        assert!(s.validate_public_fields().is_err());
+        s.max_context_messages = 200;
+        assert!(s.validate_public_fields().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_auto_check_interval() {
+        let mut s = defaults();
+        s.auto_system_check_interval_minutes = 0;
+        assert!(s.validate_public_fields().is_err());
+        s.auto_system_check_interval_minutes = 9999;
+        assert!(s.validate_public_fields().is_err());
+    }
+
+    #[test]
+    fn merge_input_clears_api_key_when_requested() {
+        let mut s = defaults();
+        s.api_key = Some("secret".into());
+        let input = LlmSettingsInput {
+            api_key: Some("ignored".into()),
+            clear_api_key: true,
+            base_url: s.base_url.clone(),
+            model: s.model.clone(),
+            temperature: s.temperature,
+            max_context_messages: s.max_context_messages,
+            system_prompt: s.system_prompt.clone(),
+            auto_system_check_enabled: false,
+            auto_system_check_interval_minutes: 10,
+        };
+        input.merge_into(&mut s);
+        assert!(s.api_key.is_none(), "clear_api_key should win over a provided key");
+    }
+
+    #[test]
+    fn merge_input_keeps_existing_key_when_blank_provided() {
+        let mut s = defaults();
+        s.api_key = Some("keepme".into());
+        let input = LlmSettingsInput {
+            api_key: Some("   ".into()),
+            clear_api_key: false,
+            base_url: s.base_url.clone(),
+            model: s.model.clone(),
+            temperature: s.temperature,
+            max_context_messages: s.max_context_messages,
+            system_prompt: s.system_prompt.clone(),
+            auto_system_check_enabled: false,
+            auto_system_check_interval_minutes: 10,
+        };
+        input.merge_into(&mut s);
+        assert_eq!(s.api_key.as_deref(), Some("keepme"));
+    }
+
+    #[test]
+    fn settings_status_reports_api_key_presence_without_leaking_value() {
+        let mut s = defaults();
+        s.api_key = Some("sk-secret".into());
+        let status = LlmSettingsStatus::from_settings(&s, PathBuf::from("/tmp/x.sqlite"));
+        assert!(status.has_api_key);
+
+        s.api_key = Some("   ".into());
+        let status = LlmSettingsStatus::from_settings(&s, PathBuf::from("/tmp/x.sqlite"));
+        assert!(
+            !status.has_api_key,
+            "blank-only api_key should be reported as absent"
+        );
+
+        s.api_key = None;
+        let status = LlmSettingsStatus::from_settings(&s, PathBuf::from("/tmp/x.sqlite"));
+        assert!(!status.has_api_key);
+    }
+}

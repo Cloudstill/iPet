@@ -199,3 +199,132 @@ fn summarize_dir(path: &Path, scanned_entries: &AtomicU64) -> DirSummary {
     }
     summary
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::TempDir;
+    use std::fs;
+
+    /// Build a small temp tree:
+    ///   root/
+    ///     a.bin   (10 bytes)
+    ///     sub/
+    ///       b.bin (20 bytes)
+    ///       c.bin (30 bytes)
+    fn build_tree() -> TempDir {
+        let dir = TempDir::new("scan");
+        fs::write(dir.path().join("a.bin"), vec![0u8; 10]).unwrap();
+        let sub = dir.path().join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("b.bin"), vec![0u8; 20]).unwrap();
+        fs::write(sub.join("c.bin"), vec![0u8; 30]).unwrap();
+        dir
+    }
+
+    fn request(path: &Path, depth: Option<usize>, children: Option<usize>) -> DiskScanRequest {
+        DiskScanRequest {
+            path: path.display().to_string(),
+            max_depth: depth,
+            max_children: children,
+        }
+    }
+
+    #[test]
+    fn scan_reports_aggregated_size_and_counts() {
+        let dir = build_tree();
+        let result = scan_path(request(dir.path(), Some(4), Some(12))).unwrap();
+        assert!(result.root.is_dir);
+        assert_eq!(result.root.size_bytes, 60, "10 + 20 + 30 = 60");
+        assert_eq!(result.root.file_count, 3);
+        // root + sub
+        assert_eq!(result.root.dir_count, 2);
+    }
+
+    #[test]
+    fn scan_sorts_children_by_size_descending() {
+        let dir = build_tree();
+        let result = scan_path(request(dir.path(), Some(4), Some(12))).unwrap();
+        let names: Vec<_> = result
+            .root
+            .children
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        // sub (50 bytes) should come before a.bin (10 bytes).
+        let sub_idx = names.iter().position(|n| n == "sub").unwrap();
+        let a_idx = names.iter().position(|n| n == "a.bin").unwrap();
+        assert!(sub_idx < a_idx, "expected larger-first ordering, got {names:?}");
+    }
+
+    #[test]
+    fn max_depth_truncates_subtree_but_keeps_summary() {
+        let dir = build_tree();
+        // depth=1 means root itself is depth 0; children are at depth 1 -> hit
+        // the depth cap. The 'sub' dir should expose size/file totals but no
+        // children, and `truncated` should be true.
+        let result = scan_path(request(dir.path(), Some(1), Some(12))).unwrap();
+        let sub = result
+            .root
+            .children
+            .iter()
+            .find(|c| c.name == "sub")
+            .expect("sub must be present");
+        assert!(sub.is_dir);
+        assert!(sub.children.is_empty(), "subtree must be empty at depth cap");
+        assert_eq!(sub.size_bytes, 50);
+        assert_eq!(sub.file_count, 2);
+        assert!(result.truncated);
+    }
+
+    #[test]
+    fn max_children_truncates_largest_subset() {
+        let dir = TempDir::new("many");
+        for (idx, size) in [10u64, 50, 30, 100, 20].iter().enumerate() {
+            fs::write(dir.path().join(format!("f{idx}.bin")), vec![0u8; *size as usize]).unwrap();
+        }
+        let result = scan_path(request(dir.path(), Some(3), Some(2))).unwrap();
+        assert_eq!(result.root.children.len(), 2);
+        // After sort, the two largest (100 and 50) survive.
+        let sizes: Vec<_> = result
+            .root
+            .children
+            .iter()
+            .map(|c| c.size_bytes)
+            .collect();
+        assert_eq!(sizes, vec![100, 50]);
+        assert!(result.truncated);
+    }
+
+    #[test]
+    fn missing_path_errors() {
+        let request = DiskScanRequest {
+            path: "Z:/no/such/path/exists/here/iPet/test".to_string(),
+            max_depth: None,
+            max_children: None,
+        };
+        let err = scan_path(request).expect_err("missing path must error");
+        assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn options_clamp_to_safe_bounds() {
+        let request = DiskScanRequest {
+            path: ".".to_string(),
+            max_depth: Some(9999),
+            max_children: Some(9999),
+        };
+        let opts = request.options();
+        assert_eq!(opts.max_depth, 12);
+        assert_eq!(opts.max_children, 64);
+
+        let request = DiskScanRequest {
+            path: ".".to_string(),
+            max_depth: Some(0),
+            max_children: Some(0),
+        };
+        let opts = request.options();
+        assert_eq!(opts.max_depth, 1);
+        assert_eq!(opts.max_children, 1);
+    }
+}

@@ -674,3 +674,167 @@ fn is_valid_tool_name(name: &str) -> bool {
     }
     chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::TempDir;
+
+    fn fresh_storage() -> (TempDir, Storage) {
+        let dir = TempDir::new("storage");
+        let storage = Storage::open(dir.path().join("ipet-test.sqlite3"))
+            .expect("storage must open on a fresh temp path");
+        (dir, storage)
+    }
+
+    fn http_tool_input(name: &str, url: &str) -> ToolConfigInput {
+        ToolConfigInput {
+            name: name.to_string(),
+            display_name: format!("display-{name}"),
+            description: "a test tool".to_string(),
+            kind: "http".to_string(),
+            enabled: true,
+            parameters: json!({"type": "object", "properties": {}}),
+            http: Some(HttpToolConfig {
+                method: "GET".to_string(),
+                url: url.to_string(),
+                headers: vec![],
+            }),
+        }
+    }
+
+    #[test]
+    fn open_seeds_builtin_tools() {
+        let (_dir, storage) = fresh_storage();
+        let tools = storage.list_tools().unwrap();
+        let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"get_system_status") && names.contains(&"scan_disk"),
+            "missing built-in tools, got {names:?}"
+        );
+        assert!(
+            tools.iter().filter(|t| t.built_in).count() >= 2,
+            "built-in tools must keep their built_in flag"
+        );
+    }
+
+    #[test]
+    fn llm_settings_roundtrip_preserves_fields() {
+        let (_dir, storage) = fresh_storage();
+        let mut settings = LlmSettings::default();
+        settings.api_key = Some("sk-roundtrip".into());
+        settings.model = "test-model".into();
+        settings.temperature = 0.42;
+        settings.max_context_messages = 12;
+        storage.save_llm_settings(&settings).unwrap();
+
+        let loaded = storage.load_llm_settings().unwrap();
+        assert_eq!(loaded.api_key.as_deref(), Some("sk-roundtrip"));
+        assert_eq!(loaded.model, "test-model");
+        assert!((loaded.temperature - 0.42).abs() < f32::EPSILON);
+        assert_eq!(loaded.max_context_messages, 12);
+    }
+
+    #[test]
+    fn save_llm_settings_rejects_invalid_fields() {
+        let (_dir, storage) = fresh_storage();
+        let mut bad = LlmSettings::default();
+        bad.model = "   ".into();
+        let err = storage.save_llm_settings(&bad).unwrap_err();
+        assert!(matches!(err, AppError::Config(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn chat_messages_round_trip_in_chronological_order() {
+        let (_dir, storage) = fresh_storage();
+        storage.save_chat_message("user", "hello").unwrap();
+        storage.save_chat_message("assistant", "hi there").unwrap();
+        storage.save_chat_message("user", "how are you").unwrap();
+
+        let recent = storage.recent_messages(10).unwrap();
+        assert_eq!(recent.len(), 3);
+        // recent_messages returns oldest-first after the internal reverse.
+        let contents: Vec<_> = recent.iter().map(|r| r.content.as_str()).collect();
+        assert_eq!(contents, vec!["hello", "hi there", "how are you"]);
+    }
+
+    #[test]
+    fn recent_messages_respects_limit() {
+        let (_dir, storage) = fresh_storage();
+        for i in 0..5 {
+            storage.save_chat_message("user", &format!("msg-{i}")).unwrap();
+        }
+        let recent = storage.recent_messages(2).unwrap();
+        assert_eq!(recent.len(), 2);
+        // After the reverse, we should see the two newest in chronological order.
+        let contents: Vec<_> = recent.iter().map(|r| r.content.as_str()).collect();
+        assert_eq!(contents, vec!["msg-3", "msg-4"]);
+    }
+
+    #[test]
+    fn save_custom_tool_rejects_overriding_builtin() {
+        let (_dir, storage) = fresh_storage();
+        let input = http_tool_input("get_system_status", "https://example.com/x");
+        let err = storage.save_custom_tool(input).unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn save_custom_tool_rejects_disallowed_url() {
+        let (_dir, storage) = fresh_storage();
+        let input = http_tool_input("my_tool", "http://127.0.0.1/admin");
+        let err = storage.save_custom_tool(input).unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn save_and_toggle_custom_http_tool() {
+        let (_dir, storage) = fresh_storage();
+        let input = http_tool_input("my_tool", "https://example.com/api");
+        let saved = storage.save_custom_tool(input).unwrap();
+        assert_eq!(saved.name, "my_tool");
+        assert!(saved.enabled);
+        assert!(!saved.built_in);
+
+        let toggled = storage.set_tool_enabled("my_tool", false).unwrap();
+        assert!(!toggled.enabled);
+
+        storage.delete_tool("my_tool").unwrap();
+        assert!(storage.get_tool("my_tool").unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_tool_refuses_to_remove_builtin() {
+        let (_dir, storage) = fresh_storage();
+        let err = storage.delete_tool("get_system_status").unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn token_stats_accumulates_usage() {
+        let (_dir, storage) = fresh_storage();
+        storage
+            .record_token_usage("req-1", "model-a", 10, 20, 30, 1)
+            .unwrap();
+        storage
+            .record_token_usage("req-2", "model-a", 5, 5, 10, 0)
+            .unwrap();
+        let stats = storage.token_stats().unwrap();
+        assert_eq!(stats.prompt_tokens, 15);
+        assert_eq!(stats.completion_tokens, 25);
+        assert_eq!(stats.total_tokens, 40);
+        assert_eq!(stats.requests, 2);
+        assert_eq!(stats.tool_calls, 1);
+        assert!(stats.recent.iter().any(|r| r.request_id == "req-1"));
+    }
+
+    #[test]
+    fn invalid_tool_name_rejected() {
+        assert!(!is_valid_tool_name(""));
+        assert!(!is_valid_tool_name("1starts_with_digit"));
+        assert!(!is_valid_tool_name("has-dash"));
+        assert!(!is_valid_tool_name("has space"));
+        assert!(is_valid_tool_name("_ok"));
+        assert!(is_valid_tool_name("get_status_v2"));
+    }
+}

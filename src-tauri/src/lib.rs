@@ -5,6 +5,8 @@ mod http_safety;
 mod llm_client;
 mod storage;
 mod system_monitor;
+#[cfg(test)]
+mod testutil;
 mod tool_dispatcher;
 
 use app_error::{public_error, AppError, AppResult};
