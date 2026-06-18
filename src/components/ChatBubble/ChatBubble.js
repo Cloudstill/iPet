@@ -30,6 +30,7 @@ export function renderChat(container, state, handlers) {
         <span class="status-chips">
           <span class="tool-chip" data-role="tool-chip" ${showToolChip ? "" : "hidden"} title="${escapeAttr(state.toolActivity || "")}">${escapeHtml(state.toolActivity || "")}</span>
           <span class="thinking-clock" data-role="thinking-clock" ${state.thinkingStartedAt ? "" : "hidden"}>${escapeHtml(thinkingText)}</span>
+          ${tokenHint(state)}
         </span>
       </div>
     </section>
@@ -102,6 +103,9 @@ export function updateChatStreaming(container, state) {
 
   const last = state.messages[state.messages.length - 1];
   if (!last || last.role !== "assistant") return false;
+  // Typed messages (tool-event / system-event / error) are not streaming
+  // assistant text — leave them to a full render (ref-plan §12.3).
+  if (last.type) return false;
 
   const lastBubble = messageList.querySelector(".message-row:last-child .message-text");
   if (!lastBubble) return false;
@@ -137,6 +141,15 @@ function renderEmptyState(handlers) {
 }
 
 function renderMessage(message, _isLast) {
+  // ref-plan §12.3: a message carries an optional `type` (tool-event /
+  // system-event / error) in addition to its role. Events render as compact
+  // inline timeline cards, not as full chat bubbles, so they don't compete
+  // with the conversation.
+  const type = message.type;
+  if (type === "tool-event") return renderEventMessage(message, "tool");
+  if (type === "system-event") return renderEventMessage(message, "system");
+  if (type === "error") return renderErrorMessage(message);
+
   const role = message.role === "user" ? "user" : "assistant";
   const avatar = role === "user" ? "你" : "iP";
   const content = role === "assistant" ? renderMarkdown(message.content) : escapeHtml(message.content);
@@ -158,8 +171,46 @@ function renderMessage(message, _isLast) {
   `;
 }
 
+/** A one-line timeline event (tool call or system snapshot), ref-plan §12.3. */
+function renderEventMessage(message, kind) {
+  const label = kind === "tool" ? "工具" : "系统";
+  const icon_ = kind === "tool" ? "tools" : "settings";
+  return `
+    <div class="message-row message-row-event" data-role="message" data-message-type="${kind}-event">
+      <div class="event-card event-${kind}">
+        ${icon(icon_, { size: 14, label: label })}
+        <span class="event-label">${escapeHtml(label)}</span>
+        <span class="event-text">${escapeHtml(message.content)}</span>
+      </div>
+    </div>
+  `;
+}
+
+/** Error bubble — distinct red-tinted card so failures aren't lost in chat. */
+function renderErrorMessage(message) {
+  return `
+    <div class="message-row message-row-error" data-role="message" data-message-type="error">
+      <div class="message message-error">
+        <div class="message-role">错误</div>
+        <div class="message-text">${escapeHtml(message.content)}</div>
+      </div>
+    </div>
+  `;
+}
+
 function escapeAttr(value) {
   return escapeHtml(value).replaceAll("`", "&#096;");
+}
+
+/** Status-strip token hint (ref-plan §5.2) — total tokens used so far. */
+function tokenHint(state) {
+  const total = Number(state.stats?.totalTokens ?? 0);
+  if (!total) return "";
+  return `<span class="token-hint" title="累计 token 用量">${formatNum(total)} tokens</span>`;
+}
+
+function formatNum(value) {
+  return Number(value || 0).toLocaleString("en-US");
 }
 
 function formatElapsed(ms) {

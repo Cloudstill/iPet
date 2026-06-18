@@ -37,9 +37,7 @@ button {
   vertical-align: middle;
 }
 
-button .icon,
-.tab .icon,
-.settings-tab .icon {
+button .icon {
   width: 16px;
   height: 16px;
 }
@@ -672,7 +670,6 @@ button .icon,
 }
 
 .chat-panel,
-.system-panel,
 .settings-panel {
   height: 100%;
   display: flex;
@@ -765,6 +762,66 @@ button .icon,
 
 .markdown-body {
   white-space: normal;
+}
+
+/* Timeline events + error bubbles (ref-plan §12.3). */
+.message-row-event {
+  justify-content: flex-start;
+}
+.event-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 12px);
+  padding: 6px 10px;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  animation: fade-in-up 240ms var(--ease-spring) both;
+}
+.event-card .icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+.event-label {
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+}
+.event-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.event-tool {
+  border-color: var(--color-accent-ring);
+  color: var(--color-accent);
+}
+.event-tool .event-label {
+  color: var(--color-accent);
+}
+
+.message-row-error {
+  justify-content: flex-start;
+}
+.message-error {
+  border-color: var(--color-danger-soft);
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  border-bottom-left-radius: var(--radius-sm);
+}
+.message-error .message-role {
+  color: var(--color-danger);
+  opacity: 1;
+}
+
+/* Status-strip token hint (ref-plan §5.2). */
+.token-hint {
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .markdown-body p,
@@ -1035,7 +1092,6 @@ select:focus {
 
 .text-button,
 .icon-button.primary,
-.settings-tab,
 .action-button {
   min-height: var(--platform-control-height);
   border: 0;
@@ -1058,7 +1114,6 @@ select:focus {
 
 .text-button:hover,
 .icon-button.primary:hover,
-.settings-tab:hover,
 .action-button:hover {
   transform: scale(1.02);
   filter: brightness(1.02);
@@ -1164,47 +1219,8 @@ code.inline-code {
 }
 
 /* -------------------------------------------------------------------------
-   11. Settings panel
+   11. Settings cards (used by Control Center section views)
    ------------------------------------------------------------------------- */
-.settings-tabs {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  padding: 6px;
-  border: 1px solid var(--color-hairline-on-glass);
-  border-radius: var(--radius-card);
-  background: var(--color-surface-muted);
-  backdrop-filter: blur(18px) saturate(160%);
-  -webkit-backdrop-filter: blur(18px) saturate(160%);
-  animation: fade-in-up 420ms var(--ease-spring) both;
-}
-
-.settings-tab {
-  display: inline-flex;
-  min-width: 0;
-  height: 34px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 0 10px;
-  background: transparent;
-  color: var(--color-text-secondary);
-}
-
-.settings-tab.active {
-  background: var(--color-surface-strong);
-  color: var(--color-text);
-  box-shadow:
-    inset 0 1px 0 var(--color-hairline-on-glass),
-    0 8px 22px rgba(0, 0, 0, 0.08);
-}
-
-.settings-content {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
 .settings-card {
   display: flex;
   flex-direction: column;
@@ -1376,14 +1392,8 @@ select[aria-invalid="true"] {
 }
 
 /* -------------------------------------------------------------------------
-   12. Tools tab
+   12. Tools library
    ------------------------------------------------------------------------- */
-.tool-layout {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 14px;
-}
-
 .tool-summary {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1895,28 +1905,6 @@ td[num] {
   background: linear-gradient(90deg, var(--color-success), var(--color-accent));
 }
 
-.disk-form {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 96px;
-  gap: 10px;
-}
-
-.scan-tree {
-  display: flex;
-  min-height: 80px;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px;
-}
-
-.scan-summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  font-size: 12px;
-}
-
 .scan-summary strong {
   font-size: 16px;
 }
@@ -2163,11 +2151,6 @@ td[num] {
    17. Responsive
    ------------------------------------------------------------------------- */
 @media (min-width: 720px) {
-  .tool-layout {
-    grid-template-columns: minmax(0, 0.92fr) minmax(320px, 1.08fr);
-    align-items: start;
-  }
-
   .tool-summary {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
@@ -2199,39 +2182,25 @@ td[num] {
 }
 
 @media (max-width: 390px) {
-  .app-shell {
-    grid-template-rows:
-      42px
-      minmax(142px, 166px)
-      52px
-      minmax(0, 1fr);
-  }
-
-  .tab,
-  .settings-tab {
-    white-space: nowrap;
-    font-size: 12px;
-    padding: 0 6px;
-  }
-
-  .pet-wrap,
-  .tabbar {
-    margin-right: 10px;
-    margin-left: 10px;
-  }
-
+  /* Narrow windows (≥ the 360x560 talk minimum, ref-plan §5.2): tighten
+     padding and collapse grids to a single column. Do NOT reset the shell
+     grid-template-rows here — the view-driven talk/control/capsule templates
+     already adapt; forcing the old 4-row layout broke the new shell. */
   .chat-panel,
-  .system-panel,
-  .settings-panel {
+  .settings-panel,
+  .control-panel {
     padding-right: 10px;
     padding-left: 10px;
   }
 
   .metric-grid,
   .settings-grid,
-  .chat-form,
-  .disk-form {
+  .chat-form {
     grid-template-columns: 1fr;
+  }
+
+  .control-nav-item span {
+    display: none;
   }
 }
 
@@ -2285,14 +2254,99 @@ td[num] {
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
 }
 
-/* Linux: low blur fallback — replace glass with more solid surfaces. */
+/* macOS profile (ref-plan §7.2): grouped system-settings rows — label left,
+   control right — lighter shadows, sheet-like dialogs, restrained motion. */
+:root[data-platform="macos"] .settings-card label {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+:root[data-platform="macos"] .settings-card label > span:first-child {
+  flex: 0 0 auto;
+  color: var(--color-text-secondary);
+}
+:root[data-platform="macos"] .settings-card input,
+:root[data-platform="macos"] .settings-card select,
+:root[data-platform="macos"] .settings-card textarea {
+  flex: 1 1 auto;
+  max-width: 60%;
+}
+:root[data-platform="macos"] .dialog {
+  border-radius: 12px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.18);
+}
+:root[data-platform="macos"] .text-button.primary {
+  background: var(--color-accent);
+  color: #ffffff;
+  border-radius: var(--radius-control);
+}
+:root[data-platform="macos"] .text-button.primary:hover {
+  background: var(--color-accent-hover);
+}
+
+/* Windows profile (ref-plan §7.3): Fluent cards with clearer input borders,
+   a prominent blue primary button, and a distinct focus ring. */
+:root[data-platform="windows"] .settings-card,
+:root[data-platform="windows"] .tool-card {
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-card);
+}
+:root[data-platform="windows"] .settings-card input,
+:root[data-platform="windows"] .settings-card select,
+:root[data-platform="windows"] .settings-card textarea,
+:root[data-platform="windows"] .tool-form input,
+:root[data-platform="windows"] .tool-form textarea {
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+}
+:root[data-platform="windows"] .settings-card input:focus,
+:root[data-platform="windows"] .tool-form input:focus {
+  border-color: var(--color-accent);
+}
+:root[data-platform="windows"] .text-button.primary {
+  background: var(--color-accent);
+  color: #ffffff;
+}
+:root[data-platform="windows"] .text-button.primary:hover {
+  background: var(--color-accent-hover);
+  transform: scale(1.02);
+}
+:root[data-platform="windows"] :focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+  box-shadow: none;
+}
+
+/* Linux profile (ref-plan §7.4): low blur fallback — replace glass with solid
+   surfaces, lighter shadows, stricter reduced-motion. */
 :root[data-platform="linux"] .pet-wrap,
 :root[data-platform="linux"] .settings-card,
 :root[data-platform="linux"] .tool-card,
 :root[data-platform="linux"] .tool-form,
 :root[data-platform="linux"] .metric,
 :root[data-platform="linux"] .breakdown,
-:root[data-platform="linux"] .chat-form {
+:root[data-platform="linux"] .chat-form,
+:root[data-platform="linux"] .talk-header,
+:root[data-platform="linux"] .titlebar,
+:root[data-platform="linux"] .control-nav {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: var(--color-surface-strong);
+}
+:root[data-platform="linux"] .app-shell::before {
+  display: none;
+}
+:root[data-platform="linux"] .settings-card,
+:root[data-platform="linux"] .tool-card {
+  border: 1px solid var(--color-hairline);
+  box-shadow: none;
+}
+
+/* Unknown / preview profile (ref-plan §7.5): neutral buttons, solid surface,
+   low blur — already the default; just ensure no glass leaks through. */
+:root[data-platform="unknown"] .titlebar,
+:root[data-platform="unknown"] .talk-header {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   background: var(--color-surface-strong);
@@ -2324,30 +2378,29 @@ td[num] {
   }
 }
 
-/* Short-window pet stage compaction (ui-plan §6.1). */
+/* Short-window compaction (ref-plan §5.2: 360x560 talk minimum). The big pet
+   stage is gone from talk, so we only tighten spacing — never reset the shell
+   grid (that would re-impose the old 4-row layout and break the view templates). */
 @media (max-height: 620px) {
-  .app-shell {
-    grid-template-rows:
-      var(--platform-titlebar-height)
-      minmax(142px, 168px)
-      var(--tabbar-height)
-      minmax(0, 1fr);
+  .talk-header {
+    padding: 8px 12px;
   }
-  .pet-stage {
-    height: 142px;
+  .chat-panel,
+  .control-panel {
+    padding-top: 10px;
   }
 }
 
 @media (max-height: 520px) {
-  .app-shell {
-    grid-template-rows:
-      var(--platform-titlebar-height)
-      minmax(116px, 132px)
-      var(--tabbar-height)
-      minmax(0, 1fr);
+  .talk-header {
+    padding: 6px 10px;
   }
-  .pet-stage {
-    height: 116px;
+  .talk-avatar {
+    width: 30px;
+    height: 30px;
+  }
+  .talk-meta strong {
+    font-size: 13px;
   }
   .pet-body {
     width: 96px;

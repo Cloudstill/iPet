@@ -33,10 +33,26 @@ export function bindControlCenter(ctx) {
   if (nav) {
     nav.innerHTML = SECTIONS.map((s) => {
       const active = state.controlSection === s.id;
-      return `<button class="control-nav-item ${active ? "active" : ""}" type="button" role="tab" aria-selected="${active ? "true" : "false"}" data-control-section="${s.id}">${icon(s.icon)}<span>${s.label}</span></button>`;
+      return `<button class="control-nav-item ${active ? "active" : ""}" type="button" role="tab" aria-selected="${active ? "true" : "false"}" tabindex="${active ? "0" : "-1"}" data-control-section="${s.id}">${icon(s.icon)}<span>${s.label}</span></button>`;
     }).join("");
-    nav.querySelectorAll("[data-control-section]").forEach((button) => {
+    const buttons = Array.from(nav.querySelectorAll("[data-control-section]"));
+    buttons.forEach((button) => {
       button.addEventListener("click", () => handlers.onControlSection(button.dataset.controlSection));
+    });
+    // Arrow-key section switching (ref-plan §15.6 — keyboard-accessible nav).
+    nav.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowRight" && event.key !== "ArrowLeft" && event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      event.preventDefault();
+      const idx = buttons.findIndex((b) => b.dataset.controlSection === state.controlSection);
+      const dir = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1;
+      const next = buttons[(idx + dir + buttons.length) % buttons.length];
+      handlers.onControlSection(next.dataset.controlSection);
+      // Focus the newly-active tab after re-render.
+      window.requestAnimationFrame(() => {
+        document
+          .querySelector(`[data-control-section="${next.dataset.controlSection}"]`)
+          ?.focus();
+      });
     });
   }
 

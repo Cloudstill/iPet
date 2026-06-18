@@ -263,7 +263,11 @@ async function sendMessage(content) {
     state.chatBusy = false;
     state.chatStatus = String(error);
     stopThinking();
-    appendAssistantDelta(`\n${String(error)}`);
+    // Drop the empty trailing assistant placeholder and surface the failure as
+    // a distinct error bubble (ref-plan §12.3) instead of inlining raw text.
+    const last = state.messages[state.messages.length - 1];
+    if (last?.role === "assistant" && !last.content) state.messages.pop();
+    state.messages.push({ role: "assistant", type: "error", content: String(error) });
     pet.setMood("idle");
     render();
   }
