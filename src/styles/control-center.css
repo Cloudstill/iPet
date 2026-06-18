@@ -1,5 +1,21 @@
 /* iPet Control Center — form primitives, settings cards, tool library, usage. */
 
+/* A titled block that groups a heading with loose controls (e.g. the Tools
+   "Add Tool" composer) without nesting a card inside a card. The heading sits
+   above; the .tool-form below it is the card. */
+.section-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.section-title {
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--text-subtitle);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
 /* -------------------------------------------------------------------------
    10. Form controls (shared)
    ------------------------------------------------------------------------- */
@@ -199,8 +215,10 @@ code.inline-code {
   line-height: 1.45;
 }
 
-/* Legacy single-form card (kept for compatibility). */
-.settings-form,
+/* .settings-form is a plain flex container — NOT a card. The cards inside it
+   (.settings-status, .settings-card) are the visual surfaces; wrapping a card
+   in another card was the "card-in-card" anti-pattern ref-plan §16 forbids and
+   produced a cramped double-border look. */
 .settings-status {
   border: 1px solid var(--color-hairline-on-glass);
   border-radius: var(--radius-card);
@@ -246,7 +264,6 @@ code.inline-code {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 12px;
   animation: fade-in-up 460ms var(--ease-spring) 80ms both;
 }
 
@@ -453,6 +470,18 @@ select[aria-invalid="true"] {
   background: rgba(0, 0, 0, 0.05);
   font-size: 11px;
   font-weight: 600;
+  /* Runtime badges carry a method+URL or a command line that can be long;
+     cap width and ellipsize so they never push the card wider than its
+     column (ref-plan §6.2, §15.7 — long paths/URLs don't break layout). */
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-meta .inline-code {
+  font-family: var(--font-mono);
+  font-weight: 500;
 }
 
 .tool-meta .badge-local {
@@ -587,7 +616,9 @@ details pre,
 
 .segmented {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* Auto-fit so a 3-tab composer and a 4-tab platform-style picker both lay out
+     on a single row without an orphan tab wrapping to a second line. */
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
   gap: 4px;
   padding: 4px;
   border: 1px solid var(--color-hairline-on-glass);

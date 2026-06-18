@@ -219,6 +219,10 @@
   min-height: 0;
   overflow: auto;
   background: transparent;
+  /* Consistent inner gutter for every Control Center section (Model/System
+     use .settings-form, Tools/Usage/Appearance render straight in). Centralizing
+     padding here avoids per-section drift and edge-touching content. */
+  padding: 14px 14px 18px;
 }
 
 /* Control Center navigation — segmented bar on narrow windows, sidebar on wide

@@ -120,9 +120,11 @@
   flex: 0 0 auto;
   color: var(--color-text-secondary);
 }
+/* Single-line inputs get the label-left/control-right grouped-row look.
+   Textareas stay full-width — capping a multi-line box at 60% makes it
+   cramped and wastes the column. */
 :root[data-platform="macos"] .settings-card input,
-:root[data-platform="macos"] .settings-card select,
-:root[data-platform="macos"] .settings-card textarea {
+:root[data-platform="macos"] .settings-card select {
   flex: 1 1 auto;
   max-width: 60%;
 }

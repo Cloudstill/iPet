@@ -1,6 +1,6 @@
 import { escapeHtml } from "../utils/markdown.js";
 import { icon } from "../ui/icons.js";
-import { card, escapeAttr, DEFAULT_SCHEMA } from "./shared.js";
+import { escapeAttr, DEFAULT_SCHEMA } from "./shared.js";
 
 /**
  * ToolsView — the Tool Library (ref-plan §6.2, Phase 4). A searchable list of
@@ -28,18 +28,15 @@ export function renderToolsView(container, state, handlers) {
       ${visible.map(renderToolCard).join("") || '<div class="empty-state">暂无工具</div>'}
     </div>
 
-    ${card(
-      "添加工具",
-      `
-        <div class="segmented" role="tablist" aria-label="添加工具类型">
-          ${composerTab("import", "导入", state)}
-          ${composerTab("http", "HTTP", state)}
-          ${composerTab("local", "本地", state)}
-        </div>
-        ${renderComposerForm(state)}
-      `,
-      { className: "tool-composer-card" },
-    )}
+    <section class="section-block">
+      <h3 class="section-title">添加工具</h3>
+      <div class="segmented" role="tablist" aria-label="添加工具类型">
+        ${composerTab("import", "导入", state)}
+        ${composerTab("http", "HTTP", state)}
+        ${composerTab("local", "本地", state)}
+      </div>
+      ${renderComposerForm(state)}
+    </section>
 
     <div class="tool-format tool-reference">
       <strong>工具格式参考</strong>
