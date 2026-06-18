@@ -14,10 +14,10 @@
       {
         "title": "iPet",
         "label": "main",
-        "width": 440,
+        "width": 720,
         "height": 720,
-        "minWidth": 120,
-        "minHeight": 140,
+        "minWidth": 720,
+        "minHeight": 720,
         "transparent": true,
         "decorations": false,
         "alwaysOnTop": true,

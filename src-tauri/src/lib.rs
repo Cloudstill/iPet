@@ -264,6 +264,13 @@ fn set_compact_window(window: Window, enabled: bool) -> Result<(), String> {
     // snapping every expand back to the original 440x720 default.
     const STATE_KEY: &str = "ipet:expanded-size";
 
+    // The expanded (talk/control) minimum matches the Control Center default
+    // size: 720x720 keeps the sidebar nav visible and prevents the user from
+    // shrinking the window below the layout's responsive breakpoint. Capsule
+    // mode temporarily relaxes the minimum so the 148x166 puck can be set.
+    const EXPANDED_MIN: (f64, f64) = (720.0, 720.0);
+    const CAPSULE_MIN: (f64, f64) = (120.0, 140.0);
+
     if enabled {
         if let Ok(size) = window.outer_size() {
             if let Ok(scale) = window.scale_factor() {
@@ -280,10 +287,22 @@ fn set_compact_window(window: Window, enabled: bool) -> Result<(), String> {
                 }
             }
         }
+        // Relax the minimum first, then shrink — order matters: a min of 720
+        // would clamp the 148x166 set_size and break the capsule.
+        let _ = window.set_min_size(Some(tauri::Size::Logical(LogicalSize::new(
+            CAPSULE_MIN.0,
+            CAPSULE_MIN.1,
+        ))));
         window
             .set_size(LogicalSize::new(148.0, 166.0))
             .map_err(|error| error.to_string())
     } else {
+        // Restore the expanded minimum before resizing so the restored size
+        // (if smaller than 720, e.g. a stale saved value) is clamped up.
+        let _ = window.set_min_size(Some(tauri::Size::Logical(LogicalSize::new(
+            EXPANDED_MIN.0,
+            EXPANDED_MIN.1,
+        ))));
         let (width, height) = window
             .try_state::<AppState>()
             .and_then(|app| {
@@ -300,7 +319,11 @@ fn set_compact_window(window: Window, enabled: bool) -> Result<(), String> {
                     None
                 }
             })
-            .unwrap_or((440.0, 720.0));
+            .unwrap_or(EXPANDED_MIN);
+        // Clamp the restored size up to the expanded minimum — never let an
+        // old saved value shrink the window below the Control Center default.
+        let width = width.max(EXPANDED_MIN.0);
+        let height = height.max(EXPANDED_MIN.1);
         window
             .set_size(LogicalSize::new(width, height))
             .map_err(|error| error.to_string())
