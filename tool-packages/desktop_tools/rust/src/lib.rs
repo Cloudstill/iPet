@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
 use std::fs;
 use std::io::Read;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -19,6 +19,7 @@ const DEFAULT_TEXT_BYTES: u64 = 64 * 1024;
 const DEFAULT_TEXT_LINES: usize = 300;
 const MAX_TEXT_LINES: usize = 2_000;
 const MAX_COMMAND_OUTPUT_CHARS: usize = 20_000;
+const MAX_COMMAND_OUTPUT_READ_CHARS: usize = MAX_COMMAND_OUTPUT_CHARS + 1;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +55,8 @@ struct SearchMatch {
 struct SearchFilesResult {
     root: String,
     query: String,
+    result_count: usize,
+    max_results: usize,
     scanned_entries: usize,
     truncated: bool,
     matches: Vec<SearchMatch>,
@@ -147,6 +150,8 @@ pub fn search_files(args: SearchFilesArgs) -> Result<String, String> {
     serde_json::to_string(&SearchFilesResult {
         root: root.display().to_string(),
         query: query.to_string(),
+        result_count: matches.len(),
+        max_results,
         scanned_entries,
         truncated,
         matches,
@@ -194,6 +199,7 @@ pub fn read_text_file(args: ReadTextFileArgs) -> Result<String, String> {
     }
 
     let text = String::from_utf8_lossy(&bytes);
+    let is_likely_binary = bytes.contains(&0);
     let selected = text
         .lines()
         .enumerate()
@@ -211,6 +217,9 @@ pub fn read_text_file(args: ReadTextFileArgs) -> Result<String, String> {
         "truncated": truncated,
         "startLine": start_line,
         "maxLines": max_lines,
+        "returnedLines": selected.len(),
+        "endLine": selected.last().and_then(|line| line.split_once(':')).and_then(|(n, _)| n.parse::<usize>().ok()),
+        "isLikelyBinary": is_likely_binary,
         "content": selected.join("\n")
     }))
     .map_err(|err| err.to_string())
@@ -321,8 +330,8 @@ pub fn list_processes(args: ListProcessesArgs) -> Result<String, String> {
         .collect::<Vec<_>>();
 
     match args.sort_by.as_deref().unwrap_or("cpu") {
-        "memory" => processes.sort_by(|a, b| b.memory_bytes.cmp(&a.memory_bytes)),
-        "name" => processes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+        "memory" => processes.sort_by_key(|process| Reverse(process.memory_bytes)),
+        "name" => processes.sort_by_key(|process| process.name.to_lowercase()),
         _ => processes.sort_by(|a, b| {
             b.cpu_usage
                 .partial_cmp(&a.cpu_usage)
@@ -470,6 +479,8 @@ struct CommandResult {
     status_success: bool,
     stdout: String,
     stderr: String,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
 }
 
 fn run_command(cwd: &Path, program: &str, args: &[&str]) -> Result<CommandResult, String> {
@@ -479,26 +490,34 @@ fn run_command(cwd: &Path, program: &str, args: &[&str]) -> Result<CommandResult
     let output = command
         .output()
         .map_err(|err| format!("failed to run {} {}: {err}", program, args.join(" ")))?;
+    let (stdout, stdout_truncated) = truncate_chars_with_flag(
+        &String::from_utf8_lossy(&output.stdout),
+        MAX_COMMAND_OUTPUT_CHARS,
+    );
+    let (stderr, stderr_truncated) = truncate_chars_with_flag(
+        &String::from_utf8_lossy(&output.stderr),
+        MAX_COMMAND_OUTPUT_CHARS,
+    );
     Ok(CommandResult {
         status_success: output.status.success(),
-        stdout: truncate_chars(
-            &String::from_utf8_lossy(&output.stdout),
-            MAX_COMMAND_OUTPUT_CHARS,
-        ),
-        stderr: truncate_chars(
-            &String::from_utf8_lossy(&output.stderr),
-            MAX_COMMAND_OUTPUT_CHARS,
-        ),
+        stdout,
+        stderr,
+        stdout_truncated,
+        stderr_truncated,
     })
 }
 
 fn truncate_chars(value: &str, max: usize) -> String {
+    truncate_chars_with_flag(value, max).0
+}
+
+fn truncate_chars_with_flag(value: &str, max: usize) -> (String, bool) {
     if value.chars().count() <= max {
-        return value.to_string();
+        return (value.to_string(), false);
     }
     let mut out = value.chars().take(max).collect::<String>();
     out.push_str("\n...[truncated]");
-    out
+    (out, true)
 }
 
 fn interface_summary() -> String {
@@ -692,7 +711,9 @@ fn fetch_system_errors(hours: u64, limit: usize) -> Result<String, String> {
         // timediff is milliseconds since @SystemTime, so the time bound honors
         // sinceHours. &lt;= is the XML-escaped form of <= inside the query.
         let ms = hours * 3_600_000;
-        let query = format!("/q:*[System[(Level=1 or Level=2) and TimeCreated[timediff(@SystemTime) &lt;= {ms}]]]");
+        let query = format!(
+            "/q:*[System[(Level=1 or Level=2) and TimeCreated[timediff(@SystemTime) &lt;= {ms}]]]"
+        );
         let count = format!("/c:{limit}");
         let args: Vec<String> = ["qe", "System"]
             .iter()
@@ -706,7 +727,15 @@ fn fetch_system_errors(hours: u64, limit: usize) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         let last = format!("{hours}h");
-        let args: Vec<&str> = vec!["show", "--last", &last, "--predicate", "messageType == error", "--style", "syslog"];
+        let args: Vec<&str> = vec![
+            "show",
+            "--last",
+            &last,
+            "--predicate",
+            "messageType == error",
+            "--style",
+            "syslog",
+        ];
         let out = run_command(Path::new("."), "log", &args)?;
         Ok(out.stdout)
     }
@@ -745,13 +774,92 @@ pub fn package_scripts(args: PackageScriptsArgs) -> Result<String, String> {
     let name = value.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let version = value.get("version").and_then(|v| v.as_str()).unwrap_or("");
     let scripts = value.get("scripts").cloned().unwrap_or_else(|| json!({}));
+    let package_manager = value
+        .get("packageManager")
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string);
+    let lockfiles = package_lockfiles(&dir);
+    let detected_manager = package_manager
+        .as_deref()
+        .and_then(|value| value.split('@').next())
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| detect_package_manager_from_lockfiles(&lockfiles));
+    let script_names = scripts
+        .as_object()
+        .map(|map| {
+            let mut names = map.keys().cloned().collect::<Vec<_>>();
+            names.sort();
+            names
+        })
+        .unwrap_or_default();
+    let recommended_checks = recommended_project_checks(&script_names, detected_manager.as_deref());
     serde_json::to_string(&json!({
         "path": dir.display().to_string(),
         "name": name,
         "version": version,
+        "packageManager": package_manager,
+        "detectedPackageManager": detected_manager,
+        "lockfiles": lockfiles,
+        "scriptCount": script_names.len(),
+        "scriptNames": script_names,
+        "recommendedChecks": recommended_checks,
         "scripts": scripts
     }))
     .map_err(|err| err.to_string())
+}
+
+fn package_lockfiles(dir: &Path) -> Vec<String> {
+    let mut locks = [
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "bun.lockb",
+    ]
+    .iter()
+    .filter(|name| dir.join(name).is_file())
+    .map(|name| (*name).to_string())
+    .collect::<Vec<_>>();
+    locks.sort();
+    locks
+}
+
+fn detect_package_manager_from_lockfiles(lockfiles: &[String]) -> Option<String> {
+    if lockfiles.iter().any(|name| name == "pnpm-lock.yaml") {
+        Some("pnpm".to_string())
+    } else if lockfiles.iter().any(|name| name == "yarn.lock") {
+        Some("yarn".to_string())
+    } else if lockfiles.iter().any(|name| name == "bun.lockb") {
+        Some("bun".to_string())
+    } else if lockfiles.iter().any(|name| name == "package-lock.json") {
+        Some("npm".to_string())
+    } else {
+        None
+    }
+}
+
+fn recommended_project_checks(script_names: &[String], manager: Option<&str>) -> Vec<String> {
+    let manager = manager.unwrap_or("npm");
+    let mut checks = Vec::new();
+    for script in ["test", "build", "lint", "check", "typecheck"] {
+        if script_names.iter().any(|name| name == script) {
+            checks.push(package_manager_run_command(manager, script));
+        }
+    }
+    checks
+}
+
+fn package_manager_run_command(manager: &str, script: &str) -> String {
+    match (manager, script) {
+        ("yarn", "test") => "yarn test".to_string(),
+        ("yarn", other) => format!("yarn {other}"),
+        ("bun", "test") => "bun test".to_string(),
+        ("bun", other) => format!("bun run {other}"),
+        ("pnpm", "test") => "pnpm test".to_string(),
+        ("pnpm", other) => format!("pnpm run {other}"),
+        (_, "test") => "npm test".to_string(),
+        (_, other) => format!("npm run {other}"),
+    }
 }
 
 // --- run_project_check ---------------------------------------------------
@@ -766,6 +874,23 @@ const ALLOWED_CHECK_COMMANDS: &[&str] = &[
     "npm run lint",
     "npm run check",
     "npm run typecheck",
+    "pnpm test",
+    "pnpm run test",
+    "pnpm run build",
+    "pnpm run lint",
+    "pnpm run check",
+    "pnpm run typecheck",
+    "yarn test",
+    "yarn build",
+    "yarn lint",
+    "yarn check",
+    "yarn typecheck",
+    "bun test",
+    "bun run test",
+    "bun run build",
+    "bun run lint",
+    "bun run check",
+    "bun run typecheck",
     "cargo test",
     "cargo check",
     "cargo build",
@@ -789,7 +914,7 @@ pub fn run_project_check(args: RunProjectCheckArgs) -> Result<String, String> {
         return Err("command must not be empty".to_string());
     }
     let normalized = command.split_whitespace().collect::<Vec<_>>().join(" ");
-    if !ALLOWED_CHECK_COMMANDS.iter().any(|allowed| *allowed == normalized) {
+    if !is_allowed_check_command(&normalized) {
         return Err(format!(
             "command not in allow-list: {normalized}（允许：{}）",
             ALLOWED_CHECK_COMMANDS.join(", ")
@@ -807,10 +932,16 @@ pub fn run_project_check(args: RunProjectCheckArgs) -> Result<String, String> {
         "cwd": cwd.display().to_string(),
         "exitOk": result.status_success,
         "timedOut": timed_out,
+        "stdoutTruncated": result.stdout_truncated,
+        "stderrTruncated": result.stderr_truncated,
         "stdout": result.stdout,
         "stderr": result.stderr
     }))
     .map_err(|err| err.to_string())
+}
+
+fn is_allowed_check_command(command: &str) -> bool {
+    ALLOWED_CHECK_COMMANDS.contains(&command)
 }
 
 /// Run a subprocess with a hard timeout, draining stdout/stderr on separate
@@ -835,18 +966,16 @@ fn run_timed_command(
     let stdout_handle = child.stdout.take();
     let stderr_handle = child.stderr.take();
     let out_thread = std::thread::spawn(move || {
-        let mut s = String::new();
         if let Some(mut h) = stdout_handle {
-            let _ = std::io::Read::read_to_string(&mut h, &mut s);
+            return read_pipe_capped(&mut h, MAX_COMMAND_OUTPUT_READ_CHARS);
         }
-        s
+        (String::new(), false)
     });
     let err_thread = std::thread::spawn(move || {
-        let mut s = String::new();
         if let Some(mut h) = stderr_handle {
-            let _ = std::io::Read::read_to_string(&mut h, &mut s);
+            return read_pipe_capped(&mut h, MAX_COMMAND_OUTPUT_READ_CHARS);
         }
-        s
+        (String::new(), false)
     });
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     let mut exit_ok = false;
@@ -869,18 +998,47 @@ fn run_timed_command(
             Err(err) => return Err(format!("wait failed: {err}")),
         }
     }
-    let out_s = out_thread.join().unwrap_or_default();
-    let err_s = err_thread.join().unwrap_or_default();
-    let stderr = if timed_out {
+    let (out_s, mut stdout_truncated) = out_thread.join().unwrap_or_default();
+    let (err_s, mut stderr_truncated) = err_thread.join().unwrap_or_default();
+    let stderr_raw = if timed_out {
         format!("timed out after {timeout_secs}s\n{err_s}")
     } else {
         err_s
     };
+    let (stdout, stdout_cut) = truncate_chars_with_flag(&out_s, MAX_COMMAND_OUTPUT_CHARS);
+    let (stderr, stderr_cut) = truncate_chars_with_flag(&stderr_raw, MAX_COMMAND_OUTPUT_CHARS);
+    stdout_truncated |= stdout_cut;
+    stderr_truncated |= stderr_cut;
     Ok(CommandResult {
         status_success: exit_ok,
-        stdout: truncate_chars(&out_s, MAX_COMMAND_OUTPUT_CHARS),
-        stderr: truncate_chars(&stderr, MAX_COMMAND_OUTPUT_CHARS),
+        stdout,
+        stderr,
+        stdout_truncated,
+        stderr_truncated,
     })
+}
+
+fn read_pipe_capped<R: Read>(reader: &mut R, max_chars: usize) -> (String, bool) {
+    let mut bytes = Vec::new();
+    let mut buf = [0u8; 4096];
+    let mut truncated = false;
+    while let Ok(n) = reader.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        let remaining = max_chars.saturating_sub(bytes.len());
+        if remaining == 0 {
+            truncated = true;
+            continue;
+        }
+        if n > remaining {
+            bytes.extend_from_slice(&buf[..remaining]);
+            truncated = true;
+        } else {
+            bytes.extend_from_slice(&buf[..n]);
+        }
+    }
+    (String::from_utf8_lossy(&bytes).into_owned(), truncated)
 }
 
 // --- disk_cleanup_candidates --------------------------------------------
@@ -934,7 +1092,7 @@ pub fn disk_cleanup_candidates(args: DiskCleanupCandidatesArgs) -> Result<String
             });
         }
     }
-    candidates.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    candidates.sort_by_key(|candidate| Reverse(candidate.size_bytes));
     candidates.truncate(max_results);
     let total: u64 = candidates.iter().map(|c| c.size_bytes).sum();
     serde_json::to_string(&json!({
@@ -1071,6 +1229,10 @@ pub struct WeatherLookupArgs {
     pub city: String,
     #[serde(default)]
     pub units: Option<String>,
+    #[serde(default)]
+    pub include_forecast: Option<bool>,
+    #[serde(default)]
+    pub forecast_days: Option<usize>,
 }
 
 pub fn weather_lookup(args: WeatherLookupArgs) -> Result<String, String> {
@@ -1082,10 +1244,23 @@ pub fn weather_lookup(args: WeatherLookupArgs) -> Result<String, String> {
         .units
         .map(|u| u.eq_ignore_ascii_case("f"))
         .unwrap_or(false);
+    let include_forecast = args.include_forecast.unwrap_or(true);
+    let forecast_days = args.forecast_days.unwrap_or(3).clamp(1, 5);
     let url = format!("https://wttr.in/{}?format=j1", url_encode(city));
     let body = http_get_text(&url, LOCAL_HTTP_TIMEOUT_SECS)?;
     let value: serde_json::Value =
         serde_json::from_str(&body).map_err(|err| format!("wttr.in returned non-JSON: {err}"))?;
+    let weather = parse_wttr_weather(&value, city, fahrenheit, include_forecast, forecast_days)?;
+    serde_json::to_string(&weather).map_err(|err| err.to_string())
+}
+
+fn parse_wttr_weather(
+    value: &serde_json::Value,
+    requested_city: &str,
+    fahrenheit: bool,
+    include_forecast: bool,
+    forecast_days: usize,
+) -> Result<serde_json::Value, String> {
     let cur = value
         .get("current_condition")
         .and_then(|v| v.get(0))
@@ -1095,10 +1270,17 @@ pub fn weather_lookup(args: WeatherLookupArgs) -> Result<String, String> {
         .and_then(|v| v.get(0))
         .and_then(|a| a.get("areaName"))
         .and_then(|v| v.get(0))
+        .and_then(|v| v.get("value").or(Some(v)))
         .and_then(|v| v.as_str())
-        .unwrap_or(city);
+        .unwrap_or(requested_city);
     let temp_key = if fahrenheit { "temp_F" } else { "temp_C" };
-    let feels_key = if fahrenheit { "FeelsLikeF" } else { "FeelsLikeC" };
+    let feels_key = if fahrenheit {
+        "FeelsLikeF"
+    } else {
+        "FeelsLikeC"
+    };
+    let min_temp_key = if fahrenheit { "mintempF" } else { "mintempC" };
+    let max_temp_key = if fahrenheit { "maxtempF" } else { "maxtempC" };
     let unit_label = if fahrenheit { "F" } else { "C" };
     let pick = |key: &str| cur.get(key).and_then(|v| v.as_str()).unwrap_or("?");
     let desc = cur
@@ -1107,20 +1289,56 @@ pub fn weather_lookup(args: WeatherLookupArgs) -> Result<String, String> {
         .and_then(|v| v.get("value"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    serde_json::to_string(&json!({
+    let forecast = if include_forecast {
+        value
+            .get("weather")
+            .and_then(|v| v.as_array())
+            .map(|days| {
+                days.iter()
+                    .take(forecast_days)
+                    .map(|day| {
+                        let hourly = day
+                            .get("hourly")
+                            .and_then(|v| v.as_array())
+                            .and_then(|values| values.get(values.len() / 2));
+                        let day_desc = hourly
+                            .and_then(|h| h.get("weatherDesc"))
+                            .and_then(|v| v.get(0))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        json!({
+                            "date": day.get("date").and_then(|v| v.as_str()).unwrap_or(""),
+                            "min": format!("{}°{}", day.get(min_temp_key).and_then(|v| v.as_str()).unwrap_or("?"), unit_label),
+                            "max": format!("{}°{}", day.get(max_temp_key).and_then(|v| v.as_str()).unwrap_or("?"), unit_label),
+                            "description": day_desc,
+                            "chanceOfRain": hourly.and_then(|h| h.get("chanceofrain")).and_then(|v| v.as_str()).map(|v| format!("{v}%")),
+                            "sunrise": day.get("astronomy").and_then(|v| v.get(0)).and_then(|v| v.get("sunrise")).and_then(|v| v.as_str()),
+                            "sunset": day.get("astronomy").and_then(|v| v.get(0)).and_then(|v| v.get("sunset")).and_then(|v| v.as_str())
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    Ok(json!({
         "city": area_name,
         "description": desc,
         "temperature": format!("{}°{}", pick(temp_key), unit_label),
         "feelsLike": format!("{}°{}", pick(feels_key), unit_label),
         "humidity": format!("{}%", pick("humidity")),
         "windKmph": pick("windspeedKmph"),
+        "observationTime": cur.get("observation_time").and_then(|v| v.as_str()),
         "units": if fahrenheit { "f" } else { "c" },
+        "forecastDays": forecast.len(),
+        "forecast": forecast,
         "source": "wttr.in"
     }))
-    .map_err(|err| err.to_string())
 }
 
-// --- web_search (keyless, DuckDuckGo Instant Answer) ---------------------
+// --- web_search (keyless, DuckDuckGo Instant Answer + HTML fallback) ------
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1136,13 +1354,68 @@ pub fn web_search(args: WebSearchArgs) -> Result<String, String> {
         return Err("query must not be empty".to_string());
     }
     let max = args.max_results.unwrap_or(8).clamp(1, 20);
-    let url = format!(
+    let instant_url = format!(
         "https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1&t=ipet",
         url_encode(query)
     );
-    let body = http_get_text(&url, LOCAL_HTTP_TIMEOUT_SECS)?;
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    let mut sources = Vec::new();
+    let mut warnings = Vec::new();
+    let mut abstract_text = None;
+
+    match http_get_text(&instant_url, LOCAL_HTTP_TIMEOUT_SECS)
+        .and_then(|body| parse_duckduckgo_instant_answer(&body, max))
+    {
+        Ok((abstract_result, instant_results)) => {
+            sources.push("DuckDuckGo Instant Answer");
+            abstract_text = abstract_result;
+            for result in instant_results {
+                push_json_result(&mut results, result, max);
+            }
+        }
+        Err(err) => warnings.push(format!("Instant Answer failed: {err}")),
+    }
+
+    if results.len() < max {
+        let html_url = format!("https://duckduckgo.com/html/?q={}", url_encode(query));
+        match http_get_text(&html_url, LOCAL_HTTP_TIMEOUT_SECS)
+            .map(|body| parse_duckduckgo_html_results(&body, max))
+        {
+            Ok(html_results) => {
+                if !html_results.is_empty() {
+                    sources.push("DuckDuckGo HTML");
+                }
+                for result in html_results {
+                    push_json_result(&mut results, result, max);
+                }
+            }
+            Err(err) => warnings.push(format!("HTML search failed: {err}")),
+        }
+    }
+
+    if sources.is_empty() {
+        return Err(format!("web search failed: {}", warnings.join("; ")));
+    }
+
+    serde_json::to_string(&json!({
+        "query": query,
+        "resultCount": results.len(),
+        "abstract": abstract_text,
+        "results": results,
+        "source": sources.join(" + "),
+        "sources": sources,
+        "warnings": warnings,
+        "note": "优先返回 DuckDuckGo Instant Answer 摘要，并合并 DuckDuckGo HTML 网页结果；结果质量取决于公开搜索端点。"
+    }))
+    .map_err(|err| err.to_string())
+}
+
+fn parse_duckduckgo_instant_answer(
+    body: &str,
+    max: usize,
+) -> Result<(Option<String>, Vec<serde_json::Value>), String> {
     let value: serde_json::Value =
-        serde_json::from_str(&body).map_err(|err| format!("DuckDuckGo non-JSON: {err}"))?;
+        serde_json::from_str(body).map_err(|err| format!("DuckDuckGo non-JSON: {err}"))?;
     let mut results: Vec<serde_json::Value> = Vec::new();
     if let Some(topics) = value.get("RelatedTopics").and_then(|v| v.as_array()) {
         for topic in topics {
@@ -1150,14 +1423,26 @@ pub fn web_search(args: WebSearchArgs) -> Result<String, String> {
                 break;
             }
             if let Some(text) = topic.get("Text").and_then(|v| v.as_str()) {
-                push_search_result(&mut results, text, topic.get("FirstURL"), max);
+                push_search_result(
+                    &mut results,
+                    text,
+                    topic.get("FirstURL"),
+                    "DuckDuckGo Instant Answer",
+                    max,
+                );
             } else if let Some(nested) = topic.get("Topics").and_then(|v| v.as_array()) {
                 for sub in nested {
                     if results.len() >= max {
                         break;
                     }
                     if let Some(text) = sub.get("Text").and_then(|v| v.as_str()) {
-                        push_search_result(&mut results, text, sub.get("FirstURL"), max);
+                        push_search_result(
+                            &mut results,
+                            text,
+                            sub.get("FirstURL"),
+                            "DuckDuckGo Instant Answer",
+                            max,
+                        );
                     }
                 }
             }
@@ -1166,22 +1451,16 @@ pub fn web_search(args: WebSearchArgs) -> Result<String, String> {
     let abstract_text = value
         .get("AbstractText")
         .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty());
-    serde_json::to_string(&json!({
-        "query": query,
-        "resultCount": results.len(),
-        "abstract": abstract_text,
-        "results": results,
-        "source": "DuckDuckGo Instant Answer",
-        "note": "DuckDuckGo Instant Answer 仅返回摘要/百科类结果，非完整网页搜索。"
-    }))
-    .map_err(|err| err.to_string())
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+    Ok((abstract_text, results))
 }
 
 fn push_search_result(
     out: &mut Vec<serde_json::Value>,
     text: &str,
     url: Option<&serde_json::Value>,
+    source: &str,
     max: usize,
 ) {
     if out.len() >= max {
@@ -1191,12 +1470,181 @@ fn push_search_result(
     out.push(json!({
         "title": truncate_chars(text, 120),
         "url": url_str,
-        "snippet": truncate_chars(text, 300)
+        "snippet": truncate_chars(text, 300),
+        "source": source
     }));
+}
+
+fn push_json_result(out: &mut Vec<serde_json::Value>, result: serde_json::Value, max: usize) {
+    if out.len() >= max {
+        return;
+    }
+    let url = result.get("url").and_then(|v| v.as_str()).unwrap_or("");
+    if !url.is_empty()
+        && out
+            .iter()
+            .any(|existing| existing.get("url").and_then(|v| v.as_str()) == Some(url))
+    {
+        return;
+    }
+    out.push(result);
+}
+
+fn parse_duckduckgo_html_results(html: &str, max: usize) -> Vec<serde_json::Value> {
+    let mut results = Vec::new();
+    let mut pos = 0usize;
+    while results.len() < max {
+        let Some(anchor_rel) = html[pos..].find("<a") else {
+            break;
+        };
+        let anchor_start = pos + anchor_rel;
+        let Some(tag_end_rel) = html[anchor_start..].find('>') else {
+            break;
+        };
+        let tag_end = anchor_start + tag_end_rel;
+        let tag = &html[anchor_start..=tag_end];
+        pos = tag_end + 1;
+
+        if !tag.contains("result__a") {
+            continue;
+        }
+        let Some(close_rel) = html[pos..].find("</a>") else {
+            continue;
+        };
+        let close = pos + close_rel;
+        let title = clean_html_text(&html[pos..close]);
+        let Some(raw_href) = extract_html_attr(tag, "href") else {
+            pos = close + "</a>".len();
+            continue;
+        };
+        let url = normalize_duckduckgo_href(&raw_href);
+        if title.is_empty() || url.is_empty() {
+            pos = close + "</a>".len();
+            continue;
+        }
+
+        let next_anchor = html[close..]
+            .find("result__a")
+            .map(|idx| close + idx)
+            .unwrap_or(html.len());
+        let snippet = extract_result_snippet(&html[close..next_anchor]);
+        push_json_result(
+            &mut results,
+            json!({
+                "title": truncate_chars(&title, 120),
+                "url": url,
+                "snippet": truncate_chars(&snippet, 300),
+                "source": "DuckDuckGo HTML"
+            }),
+            max,
+        );
+        pos = close + "</a>".len();
+    }
+    results
+}
+
+fn extract_html_attr(tag: &str, attr: &str) -> Option<String> {
+    let needle = format!("{attr}=");
+    let start = tag.find(&needle)? + needle.len();
+    let rest = &tag[start..];
+    let mut chars = rest.chars();
+    let first = chars.next()?;
+    if first == '"' || first == '\'' {
+        let value = chars.take_while(|&ch| ch != first).collect::<String>();
+        Some(html_decode(&value))
+    } else {
+        let value = rest
+            .chars()
+            .take_while(|ch| !ch.is_whitespace() && *ch != '>')
+            .collect::<String>();
+        Some(html_decode(&value))
+    }
+}
+
+fn normalize_duckduckgo_href(href: &str) -> String {
+    let decoded = html_decode(href);
+    if let Some(idx) = decoded.find("uddg=") {
+        let encoded = &decoded[idx + "uddg=".len()..];
+        let encoded = encoded.split('&').next().unwrap_or(encoded);
+        return percent_decode(encoded);
+    }
+    if decoded.starts_with("//") {
+        format!("https:{decoded}")
+    } else {
+        decoded
+    }
+}
+
+fn extract_result_snippet(segment: &str) -> String {
+    let Some(class_idx) = segment.find("result__snippet") else {
+        return String::new();
+    };
+    let Some(content_start_rel) = segment[class_idx..].find('>') else {
+        return String::new();
+    };
+    let content_start = class_idx + content_start_rel + 1;
+    let rest = &segment[content_start..];
+    let close = ["</a>", "</div>", "</span>"]
+        .iter()
+        .filter_map(|needle| rest.find(needle))
+        .min()
+        .unwrap_or(rest.len());
+    clean_html_text(&rest[..close])
+}
+
+fn clean_html_text(input: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for ch in input.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    collapse_whitespace(&html_decode(&out))
+}
+
+fn html_decode(input: &str) -> String {
+    input
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&#x27;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&nbsp;", " ")
+}
+
+fn percent_decode(input: &str) -> String {
+    let mut out = Vec::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    out.push(byte);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn collapse_whitespace(input: &str) -> String {
+    input.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn http_get_text(url: &str, timeout_secs: u64) -> Result<String, String> {
     let response = ureq::get(url)
+        .set("User-Agent", "iPet/0.4 web-search")
+        .set("Accept", "text/html,application/json")
         .timeout(Duration::from_secs(timeout_secs))
         .call()
         .map_err(|err| format!("HTTP request failed: {err}"))?;
@@ -1204,10 +1652,22 @@ fn http_get_text(url: &str, timeout_secs: u64) -> Result<String, String> {
     if !(200..300).contains(&status) {
         return Err(format!("HTTP {status} for {url}"));
     }
-    let body = response
-        .into_string()
+    let mut bytes = Vec::new();
+    let mut reader = response
+        .into_reader()
+        .take((LOCAL_HTTP_MAX_BODY_CHARS + 1) as u64);
+    reader
+        .read_to_end(&mut bytes)
         .map_err(|err| format!("read body: {err}"))?;
-    Ok(truncate_chars(&body, LOCAL_HTTP_MAX_BODY_CHARS))
+    let truncated = bytes.len() > LOCAL_HTTP_MAX_BODY_CHARS;
+    if truncated {
+        bytes.truncate(LOCAL_HTTP_MAX_BODY_CHARS);
+    }
+    let mut body = String::from_utf8_lossy(&bytes).into_owned();
+    if truncated {
+        body.push_str("\n...[truncated]");
+    }
+    Ok(body)
 }
 
 fn url_encode(value: &str) -> String {
@@ -1291,9 +1751,13 @@ fn capture_screen(png_path: &Path) -> Result<(), String> {
         {
             return Ok(());
         }
-        if run_command(Path::new("."), "gnome-screenshot", &["-f", path_str.as_str()])
-            .map(|o| o.status_success)
-            .unwrap_or(false)
+        if run_command(
+            Path::new("."),
+            "gnome-screenshot",
+            &["-f", path_str.as_str()],
+        )
+        .map(|o| o.status_success)
+        .unwrap_or(false)
             && png_path.is_file()
         {
             return Ok(());
@@ -1361,6 +1825,9 @@ mod tests {
         })
         .unwrap();
         assert!(out.contains("notes.txt"));
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["resultCount"], 1);
+        assert_eq!(value["maxResults"], 30);
     }
 
     #[test]
@@ -1377,6 +1844,10 @@ mod tests {
         .unwrap();
         assert!(out.contains("2: b"));
         assert!(!out.contains("1: a"));
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["returnedLines"], 1);
+        assert_eq!(value["endLine"], 2);
+        assert_eq!(value["isLikelyBinary"], false);
     }
 
     #[test]
@@ -1394,23 +1865,140 @@ mod tests {
     }
 
     #[test]
+    fn wttr_parser_returns_current_weather_and_forecast() {
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{
+                "current_condition": [{
+                    "temp_C": "20",
+                    "temp_F": "68",
+                    "FeelsLikeC": "19",
+                    "FeelsLikeF": "66",
+                    "humidity": "55",
+                    "windspeedKmph": "12",
+                    "observation_time": "09:00 AM",
+                    "weatherDesc": [{"value": "Partly cloudy"}]
+                }],
+                "nearest_area": [{
+                    "areaName": [{"value": "Hangzhou"}]
+                }],
+                "weather": [{
+                    "date": "2026-06-20",
+                    "mintempC": "18",
+                    "maxtempC": "26",
+                    "mintempF": "64",
+                    "maxtempF": "79",
+                    "astronomy": [{"sunrise": "05:00 AM", "sunset": "07:00 PM"}],
+                    "hourly": [
+                        {"weatherDesc": [{"value": "Morning"}], "chanceofrain": "10"},
+                        {"weatherDesc": [{"value": "Cloudy"}], "chanceofrain": "30"},
+                        {"weatherDesc": [{"value": "Evening"}], "chanceofrain": "20"}
+                    ]
+                }]
+            }"#,
+        )
+        .unwrap();
+        let out = parse_wttr_weather(&value, "杭州", false, true, 3).unwrap();
+        assert_eq!(out["city"], "Hangzhou");
+        assert_eq!(out["temperature"], "20°C");
+        assert_eq!(out["forecastDays"], 1);
+        assert_eq!(out["forecast"][0]["description"], "Cloudy");
+        assert_eq!(out["forecast"][0]["chanceOfRain"], "30%");
+        assert_eq!(out["forecast"][0]["sunrise"], "05:00 AM");
+    }
+
+    #[test]
+    fn duckduckgo_instant_parser_extracts_abstract_and_nested_topics() {
+        let body = r#"{
+            "AbstractText": "A concise summary.",
+            "RelatedTopics": [
+                {"Text": "Alpha result", "FirstURL": "https://example.com/a"},
+                {"Topics": [
+                    {"Text": "Beta result", "FirstURL": "https://example.com/b"}
+                ]}
+            ]
+        }"#;
+        let (abstract_text, results) = parse_duckduckgo_instant_answer(body, 10).unwrap();
+        assert_eq!(abstract_text.as_deref(), Some("A concise summary."));
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["url"], "https://example.com/a");
+        assert_eq!(results[1]["url"], "https://example.com/b");
+    }
+
+    #[test]
+    fn duckduckgo_html_parser_decodes_redirect_urls_and_snippets() {
+        let html = r#"
+            <div class="result">
+              <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1%26y%3D2&amp;rut=abc">
+                Example &amp; Title
+              </a>
+              <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com">
+                A <b>useful</b> snippet &amp; details.
+              </a>
+            </div>
+        "#;
+        let results = parse_duckduckgo_html_results(html, 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["title"], "Example & Title");
+        assert_eq!(results[0]["url"], "https://example.com/a?x=1&y=2");
+        assert_eq!(results[0]["snippet"], "A useful snippet & details.");
+    }
+
+    #[test]
+    fn duckduckgo_html_parser_dedupes_plain_urls() {
+        let html = r#"
+            <a class="result__a" href="https://example.com/repeat">First</a>
+            <span class="result__snippet">one</span>
+            <a class="result__a" href="https://example.com/repeat">Second</a>
+            <span class="result__snippet">two</span>
+        "#;
+        let results = parse_duckduckgo_html_results(html, 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["title"], "First");
+    }
+
+    #[test]
     fn package_scripts_reads_scripts_object() {
         let dir = temp_dir("pkgscripts");
         fs::write(
             dir.join("package.json"),
-            r#"{"name":"demo","version":"1.2.3","scripts":{"test":"vitest run","build":"vite build"}}"#,
+            r#"{"name":"demo","version":"1.2.3","packageManager":"pnpm@9.0.0","scripts":{"test":"vitest run","build":"vite build"}}"#,
         )
         .unwrap();
-        let out = package_scripts(PackageScriptsArgs { path: Some(dir.display().to_string()) }).unwrap();
+        fs::write(dir.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'").unwrap();
+        let out = package_scripts(PackageScriptsArgs {
+            path: Some(dir.display().to_string()),
+        })
+        .unwrap();
         assert!(out.contains("\"name\":\"demo\""));
         assert!(out.contains("vitest run"));
         assert!(out.contains("vite build"));
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["detectedPackageManager"], "pnpm");
+        assert_eq!(value["scriptCount"], 2);
+        assert!(value["lockfiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.as_str() == Some("pnpm-lock.yaml")));
+        assert!(value["recommendedChecks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.as_str() == Some("pnpm test")));
+        assert!(value["recommendedChecks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.as_str() == Some("pnpm run build")));
     }
 
     #[test]
     fn package_scripts_errors_when_missing() {
         let dir = temp_dir("pkgscripts-missing");
-        let err = package_scripts(PackageScriptsArgs { path: Some(dir.display().to_string()) }).unwrap_err();
+        let err = package_scripts(PackageScriptsArgs {
+            path: Some(dir.display().to_string()),
+        })
+        .unwrap_err();
         assert!(err.contains("no package.json"));
     }
 
@@ -1423,6 +2011,23 @@ mod tests {
         })
         .unwrap_err();
         assert!(err.contains("allow-list"), "got: {err}");
+    }
+
+    #[test]
+    fn run_project_check_allowlist_includes_common_package_managers() {
+        assert!(is_allowed_check_command("pnpm run build"));
+        assert!(is_allowed_check_command("yarn lint"));
+        assert!(is_allowed_check_command("bun test"));
+        assert!(is_allowed_check_command("cargo fmt --check"));
+        assert!(!is_allowed_check_command("npm run deploy"));
+    }
+
+    #[test]
+    fn read_pipe_capped_drains_but_caps_output() {
+        let mut input = std::io::Cursor::new("abcdef".as_bytes());
+        let (text, truncated) = read_pipe_capped(&mut input, 3);
+        assert_eq!(text, "abc");
+        assert!(truncated);
     }
 
     #[test]
@@ -1470,8 +2075,14 @@ mod tests {
         .unwrap();
         let journal = fs::read_to_string(dir.join("journal.md")).unwrap();
         assert!(journal.contains("one"), "original content kept: {journal}");
-        assert!(journal.contains("## Journal"), "append adds a sub-heading: {journal}");
-        assert!(journal.contains("two"), "appended content present: {journal}");
+        assert!(
+            journal.contains("## Journal"),
+            "append adds a sub-heading: {journal}"
+        );
+        assert!(
+            journal.contains("two"),
+            "appended content present: {journal}"
+        );
 
         std::env::remove_var("IPET_NOTES_DIR");
     }

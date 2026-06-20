@@ -1,7 +1,7 @@
 {
   "name": "package_scripts",
   "displayName": "项目脚本",
-  "description": "读取指定项目目录下 package.json 的 scripts，辅助选择构建/测试/检查命令。",
+  "description": "读取指定项目目录下 package.json 的 scripts、包管理器和 lockfile，并给出可用于 run_project_check 的推荐检查命令。",
   "kind": "builtin",
   "enabled": true,
   "builtIn": true,
@@ -25,6 +25,6 @@
   "permissions": ["filesystem.read"],
   "safety": {
     "readOnly": true,
-    "notes": "仅读取 package.json 的 scripts 字段，不执行任何脚本。"
+    "notes": "仅读取 package.json 与常见 lockfile 状态，不执行任何脚本。"
   }
 }

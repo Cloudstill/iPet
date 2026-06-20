@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "web_search",
-    "description": "用免 Key 的 DuckDuckGo Instant Answer 接口搜索，返回摘要与相关链接。注意：仅返回摘要/百科类结果，非完整网页搜索。",
+    "description": "用免 Key 的 DuckDuckGo 搜索公开网页，优先返回 Instant Answer 摘要，并合并普通网页结果的标题、链接和摘要。",
     "parameters": {
       "type": "object",
       "required": [

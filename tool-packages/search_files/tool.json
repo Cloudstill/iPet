@@ -1,7 +1,7 @@
 {
   "name": "search_files",
   "displayName": "文件搜索",
-  "description": "在指定目录按文件名、路径或可选文件内容搜索，返回匹配文件和片段。",
+  "description": "在指定目录按文件名、路径或可选文件内容搜索，返回匹配文件、片段、结果数和截断状态。",
   "kind": "builtin",
   "enabled": true,
   "builtIn": true,
