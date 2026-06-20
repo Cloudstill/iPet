@@ -166,7 +166,6 @@ function renderMessage(message, _isLast) {
           ${content}
         </div>
       </div>
-      ${role === "user" ? `<div class="message-avatar message-avatar-user">${avatar}</div>` : ""}
     </div>
   `;
 }

@@ -12,8 +12,12 @@
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
-  .message {
-    max-width: 78%;
+  .message-row-assistant .message {
+    max-width: min(78%, 620px);
+  }
+
+  .message-row-user .message {
+    max-width: min(68%, 540px);
   }
 }
 
@@ -29,8 +33,60 @@
     margin: 0 auto;
   }
 
-  .message {
-    max-width: 72%;
+  .message-row-assistant .message {
+    max-width: min(76%, 620px);
+  }
+
+  .message-row-user .message {
+    max-width: min(64%, 520px);
+  }
+}
+
+@media (min-width: 960px) {
+  .persona-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 36%);
+    align-items: start;
+    gap: 14px;
+  }
+
+  .persona-side {
+    position: sticky;
+    top: 0;
+    max-height: calc(100vh - var(--platform-titlebar-height) - 52px);
+  }
+
+  .persona-preview {
+    max-height: inherit;
+  }
+
+  .persona-preview textarea[name="systemPrompt"] {
+    min-height: 360px;
+    max-height: calc(100vh - var(--platform-titlebar-height) - 190px);
+  }
+}
+
+@media (max-width: 640px) {
+  .settings-grid,
+  .persona-preset-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .tool-toolbar {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .usage-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .form-actions {
+    justify-content: stretch;
+  }
+
+  .form-actions .text-button {
+    flex: 1 1 auto;
   }
 }
 
@@ -48,6 +104,7 @@
 
   .metric-grid,
   .settings-grid,
+  .persona-preset-grid,
   .chat-form {
     grid-template-columns: 1fr;
   }
@@ -102,7 +159,7 @@
   color: var(--color-text-secondary);
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 :root[data-platform="macos"] .window-button[data-chrome="control"]:hover,

@@ -42,6 +42,8 @@ describe("ChatBubble message rendering", () => {
     expect(rows).toHaveLength(2);
     expect(rows[0].dataset.messageRole).toBe("assistant");
     expect(rows[1].dataset.messageRole).toBe("user");
+    expect(rows[0].querySelector(".message-avatar")).toBeTruthy();
+    expect(rows[1].querySelector(".message-avatar")).toBeNull();
   });
 
   it("renders tool-event and system-event as compact timeline cards", () => {

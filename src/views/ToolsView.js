@@ -19,30 +19,54 @@ export function renderToolsView(container, state, handlers) {
     : tools;
 
   container.innerHTML = `
-    ${renderToolSummary(tools)}
-    <label class="tool-search">
-      <span>搜索工具</span>
-      <input name="toolSearch" type="search" placeholder="按名称或描述过滤" value="${escapeAttr(state.toolSearch || "")}" />
-    </label>
-    <div class="tool-list">
-      ${visible.map(renderToolCard).join("") || '<div class="empty-state">暂无工具</div>'}
-    </div>
+    <div class="tool-page">
+      ${renderToolSummary(tools)}
 
-    <section class="section-block">
-      <h3 class="section-title">添加工具</h3>
-      <div class="segmented" role="tablist" aria-label="添加工具类型">
-        ${composerTab("import", "导入", state)}
-        ${composerTab("http", "HTTP", state)}
-        ${composerTab("local", "本地", state)}
-      </div>
-      ${renderComposerForm(state)}
-    </section>
+      <section class="tool-toolbar" aria-label="工具筛选">
+        <div class="tool-toolbar-copy">
+          <h3>工具库</h3>
+          <p>管理模型可调用的内置、HTTP 与本地工具。</p>
+        </div>
+        <label class="tool-search">
+          <span>搜索工具</span>
+          <div class="field-with-icon">
+            ${icon("search")}
+            <input name="toolSearch" type="search" placeholder="按名称或描述过滤" value="${escapeAttr(state.toolSearch || "")}" />
+          </div>
+        </label>
+      </section>
 
-    <div class="tool-format tool-reference">
-      <strong>工具格式参考</strong>
-      <span>name 必须是函数名格式；parameters 是 JSON Schema object；HTTP：GET 转 query，其他作为 JSON body；Local：stdin 读一行 JSON，stdout 返回结果，非零退出/超时为错误；Builtin 由工具包和 Rust crate 提供。</span>
+      <section class="tool-list-section">
+        <div class="section-heading-row">
+          <h3 class="section-title">已安装工具</h3>
+          <span class="section-count">${visible.length}/${tools.length}</span>
+        </div>
+        <div class="tool-list-window" role="region" aria-label="已安装工具列表">
+          <div class="tool-list">
+            ${visible.map(renderToolCard).join("") || renderToolEmpty(q)}
+          </div>
+        </div>
+      </section>
+
+      <section class="section-block">
+        <h3 class="section-title">添加工具</h3>
+        <div class="segmented" role="tablist" aria-label="添加工具类型">
+          ${composerTab("import", "导入", state)}
+          ${composerTab("http", "HTTP", state)}
+          ${composerTab("local", "本地", state)}
+        </div>
+        ${renderComposerForm(state)}
+      </section>
+
+      <details class="tool-reference">
+        <summary>工具格式参考</summary>
+        <div class="tool-format">
+          <strong>调用约定</strong>
+          <span>name 必须是函数名格式；parameters 是 JSON Schema object；HTTP：GET 转 query，其他作为 JSON body；Local：stdin 读一行 JSON，stdout 返回结果，非零退出/超时为错误；Builtin 由工具包和 Rust crate 提供。</span>
+        </div>
+      </details>
+      <div class="inline-status" aria-live="polite">${escapeHtml(state.toolStatus || "")}</div>
     </div>
-    <div class="inline-status" aria-live="polite">${escapeHtml(state.toolStatus || "")}</div>
   `;
 
   bindTools(container, state, handlers);
@@ -55,12 +79,18 @@ function renderToolSummary(tools) {
   const local = tools.filter((t) => t.local).length;
   return `
     <div class="tool-summary">
-      <div class="metric-mini"><span>已启用</span><strong>${enabled}</strong></div>
+      <div class="metric-mini metric-mini-accent"><span>已启用</span><strong>${enabled}</strong></div>
       <div class="metric-mini"><span>内置</span><strong>${builtin}</strong></div>
       <div class="metric-mini"><span>HTTP</span><strong>${http}</strong></div>
       <div class="metric-mini"><span>本地</span><strong>${local}</strong></div>
     </div>
   `;
+}
+
+function renderToolEmpty(query) {
+  return query
+    ? '<div class="empty-state"><strong>未找到工具</strong><span>调整搜索关键词，或添加一个新工具。</span></div>'
+    : '<div class="empty-state"><strong>暂无工具</strong><span>导入工具包，或添加 HTTP / 本地工具。</span></div>';
 }
 
 function toolKindLabel(tool) {
@@ -83,16 +113,17 @@ function renderToolRuntimeBadge(tool) {
 function renderToolCard(tool) {
   const kindLabel = toolKindLabel(tool);
   const kindBadgeClass = tool.local ? "badge-local" : tool.builtIn ? "badge-builtin" : "";
+  const enabledText = tool.enabled ? "已启用" : "停用";
   return `
     <article class="tool-card" data-kind="${escapeAttr(tool.kind)}">
       <div class="tool-head">
-        <div>
+        <div class="tool-title">
           <strong>${escapeHtml(tool.displayName || tool.name)}</strong>
           <code>${escapeHtml(tool.name)}</code>
         </div>
-        <label class="switch-row">
+        <label class="tool-toggle">
           <input type="checkbox" data-tool-enabled="${escapeAttr(tool.name)}" ${tool.enabled ? "checked" : ""} />
-          <span>${tool.enabled ? "已启用" : "停用"}</span>
+          <span>${enabledText}</span>
         </label>
       </div>
       <p>${escapeHtml(tool.description)}</p>
@@ -101,8 +132,8 @@ function renderToolCard(tool) {
         <span class="${kindBadgeClass}">${kindLabel}</span>
         ${renderToolRuntimeBadge(tool)}
       </div>
-      ${tool.local ? `<div class="risk-callout">本地工具会在你的电脑上运行程序，请确认你信任该工具。</div>` : ""}
-      <details>
+      ${tool.local ? `<div class="risk-callout">${icon("warning", { size: 16 })}<span>本地工具会在你的电脑上运行程序，请确认你信任该工具。</span></div>` : ""}
+      <details class="tool-schema">
         <summary>工具 schema</summary>
         <pre>${escapeHtml(JSON.stringify(tool.parameters, null, 2))}</pre>
       </details>
@@ -115,7 +146,7 @@ function renderToolCard(tool) {
 
 function composerTab(mode, label, state) {
   const active = (state.toolComposerMode || "import") === mode;
-  return `<button class="segmented-tab ${active ? "active" : ""}" type="button" data-composer-mode="${mode}" role="tab" aria-selected="${active ? "true" : "false"}">${label}</button>`;
+  return `<button class="segmented-tab ${active ? "active" : ""}" type="button" data-composer-mode="${mode}" role="tab" aria-selected="${active ? "true" : "false"}" tabindex="${active ? "0" : "-1"}">${label}</button>`;
 }
 
 function renderComposerForm(state) {
@@ -262,6 +293,7 @@ function bindTools(container, state, handlers) {
   container.querySelectorAll("[data-composer-mode]").forEach((button) => {
     button.addEventListener("click", () => handlers.onSetComposerMode(button.dataset.composerMode));
   });
+  bindSegmentedKeyboard(container);
 
   const search = container.querySelector('[name="toolSearch"]');
   if (search) {
@@ -276,7 +308,9 @@ function bindTools(container, state, handlers) {
             [t.name, t.displayName, t.description].some((v) => String(v || "").toLowerCase().includes(q)),
           )
         : state.tools ?? [];
-      list.innerHTML = visible.map(renderToolCard).join("") || '<div class="empty-state">暂无工具</div>';
+      const count = container.querySelector(".tool-list-section .section-count");
+      if (count) count.textContent = `${visible.length}/${(state.tools ?? []).length}`;
+      list.innerHTML = visible.map(renderToolCard).join("") || renderToolEmpty(q);
       // Re-bind the per-card controls that were just replaced.
       list.querySelectorAll("[data-tool-enabled]").forEach((input) => {
         input.addEventListener("change", () => handlers.onSetToolEnabled(input.dataset.toolEnabled, input.checked));
@@ -330,5 +364,36 @@ function bindTools(container, state, handlers) {
     const path = event.currentTarget.elements.packagePath.value.trim();
     if (!path) return;
     handlers.onImportTool(path);
+  });
+}
+
+function bindSegmentedKeyboard(container) {
+  container.querySelectorAll('.segmented[role="tablist"]').forEach((tablist) => {
+    tablist.addEventListener("keydown", (event) => {
+      const keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"];
+      if (!keys.includes(event.key)) return;
+
+      const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+      if (!tabs.length) return;
+
+      event.preventDefault();
+      const current = Math.max(
+        0,
+        tabs.indexOf(document.activeElement),
+        tabs.findIndex((tab) => tab.getAttribute("aria-selected") === "true"),
+      );
+      const delta = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
+      let next = current;
+      if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = tabs.length - 1;
+      else next = (current + delta + tabs.length) % tabs.length;
+
+      tabs[next].click();
+      const refocus = globalThis.requestAnimationFrame || ((callback) => setTimeout(callback, 0));
+      refocus(() => {
+        const mode = tabs[next].dataset.composerMode;
+        container.querySelector(`[data-composer-mode="${mode}"]`)?.focus();
+      });
+    });
   });
 }

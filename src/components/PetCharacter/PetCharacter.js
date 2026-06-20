@@ -4,7 +4,7 @@ export function createPetCharacter(root) {
   root.className = "pet-stage";
   root.innerHTML = `
     <div class="pet-shadow"></div>
-    <button class="pet-body" type="button" aria-label="pet">
+    <button class="pet-body" type="button" aria-label="展开 iPet">
       <span class="pet-ear pet-ear-left"></span>
       <span class="pet-ear pet-ear-right"></span>
       <span class="pet-face">

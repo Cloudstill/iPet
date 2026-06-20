@@ -74,60 +74,91 @@
 
 .message-avatar {
   display: grid;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
   place-items: center;
-  border: 1px solid var(--color-hairline-on-glass);
+  border: 1px solid var(--color-hairline);
   border-radius: 50%;
   background:
     linear-gradient(180deg, var(--color-surface-strong), var(--color-surface)),
     var(--color-accent-soft);
-  box-shadow: 0 7px 18px rgba(0, 0, 0, 0.07);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.06);
   color: var(--color-accent);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
 }
 
-.message-avatar-user {
-  background: linear-gradient(180deg, var(--color-accent-hover), var(--color-accent));
-  color: #ffffff;
+.message-row-assistant + .message-row-assistant .message-avatar {
+  opacity: 0;
 }
 
 .message {
-  max-width: calc(100% - 36px);
+  position: relative;
+  max-width: min(84%, 620px);
   min-width: 0;
-  padding: 11px 13px;
+  padding: 10px 12px;
   overflow-wrap: anywhere;
-  border: 1px solid var(--color-hairline-on-glass);
+  border: 1px solid var(--color-hairline);
   border-radius: var(--radius-card);
   background: var(--color-surface-strong);
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.07);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 8px 18px rgba(0, 0, 0, 0.045);
+}
+
+.message::after {
+  content: "";
+  position: absolute;
+  bottom: 7px;
+  width: 7px;
+  height: 7px;
+  border: inherit;
+  background: inherit;
+  transform: rotate(45deg);
 }
 
 .message-user {
-  border-color: var(--color-accent-ring);
-  background: linear-gradient(180deg, var(--color-accent-hover), var(--color-accent));
+  max-width: min(76%, 540px);
+  border-color: rgba(0, 113, 227, 0.5);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent 42%),
+    var(--color-accent);
   color: #ffffff;
-  border-bottom-right-radius: var(--radius-sm);
+  border-bottom-right-radius: var(--radius-xs);
+  box-shadow:
+    0 2px 6px rgba(0, 113, 227, 0.16),
+    0 8px 18px rgba(0, 113, 227, 0.14);
+}
+
+.message-user::after {
+  right: -4px;
+  border-left: 0;
+  border-bottom: 0;
 }
 
 .message-assistant {
   color: var(--color-text);
-  border-bottom-left-radius: var(--radius-sm);
+  border-bottom-left-radius: var(--radius-xs);
+}
+
+.message-assistant::after {
+  left: -4px;
+  border-top: 0;
+  border-right: 0;
 }
 
 .message-role {
-  margin-bottom: 5px;
-  color: inherit;
-  font-size: 11px;
+  margin-bottom: 4px;
+  color: var(--color-text-tertiary);
+  font-size: 10.5px;
   font-weight: 700;
-  opacity: 0.68;
+  line-height: 1.2;
 }
 
 .message-text {
   white-space: pre-wrap;
-  line-height: var(--text-body-lh);
+  line-height: 1.58;
   font-size: var(--text-body);
 }
 
@@ -146,7 +177,7 @@
   max-width: calc(100% - 12px);
   padding: 6px 10px;
   border: 1px solid var(--color-hairline);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   background: var(--color-surface-muted);
   color: var(--color-text-secondary);
   font-size: 12px;
@@ -182,6 +213,10 @@
   background: var(--color-danger-soft);
   color: var(--color-danger);
   border-bottom-left-radius: var(--radius-sm);
+  box-shadow: none;
+}
+.message-error::after {
+  display: none;
 }
 .message-error .message-role {
   color: var(--color-danger);
@@ -245,8 +280,10 @@
 }
 
 .markdown-body blockquote {
-  padding-left: 10px;
+  padding: 7px 9px 7px 10px;
   border-left: 3px solid var(--color-accent-ring);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-muted);
   color: var(--color-text-secondary);
 }
 
@@ -287,10 +324,12 @@
 .md-code-block {
   max-width: 100%;
   overflow: auto;
-  padding: 10px;
-  border-radius: var(--radius-card);
+  padding: 9px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-sm);
   background: #1d1d1f;
   color: #f5f5f7;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .md-code-block code {
@@ -315,6 +354,8 @@
   max-width: 100%;
   overflow: auto;
   border-collapse: collapse;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
   font-size: 12px;
 }
 
@@ -422,4 +463,3 @@
 .tool-chip[hidden] {
   display: none;
 }
-

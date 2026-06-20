@@ -3,10 +3,10 @@ import { icon } from "../ui/icons.js";
 import { card, escapeAttr, fieldError } from "./shared.js";
 
 /**
- * ModelView — the LLM connection / provider / generation / persona settings
- * (ref-plan §6.1). Auto-check and window behavior moved out to System; theme
- * moved out to Appearance. Saves a partial override merged with the shared
- * settings draft so the backend still receives a full LlmSettingsInput.
+ * ModelView — the LLM connection / provider / generation settings
+ * (ref-plan §6.1). Persona moved out to its own Control Center section;
+ * auto-check and window behavior moved out to System; theme moved out to
+ * Appearance. Saves a partial override merged with the shared settings draft.
  */
 export function renderModelView(container, state, handlers) {
   const settings = state.settings;
@@ -24,7 +24,7 @@ export function renderModelView(container, state, handlers) {
       : "API Key 未配置";
 
   container.innerHTML = `
-    <form class="settings-form" data-role="model-form">
+    <form class="settings-form settings-page" data-role="model-form">
       <div class="settings-status ${statusClass}">
         <strong>${escapeHtml(statusTitle)}</strong>
         <span title="${escapeAttr(settings?.settingsPath || "")}">${escapeHtml(settings?.settingsPath || "")}</span>
@@ -79,17 +79,9 @@ export function renderModelView(container, state, handlers) {
         `,
       )}
 
-      ${card(
-        "人设",
-        `
-          <label>
-            <span>System Prompt</span>
-            <textarea name="systemPrompt" rows="4">${escapeHtml(draft.systemPrompt || "")}</textarea>
-          </label>
-        `,
-      )}
-
-      <button class="text-button primary" type="submit">${icon("check")} 保存设置</button>
+      <div class="form-actions">
+        <button class="text-button primary" type="submit">${icon("check")} 保存设置</button>
+      </div>
     </form>
   `;
 
@@ -103,7 +95,6 @@ export function renderModelView(container, state, handlers) {
       model: form.elements.model.value,
       temperature: Number(form.elements.temperature.value),
       maxContextMessages: Number(form.elements.maxContextMessages.value),
-      systemPrompt: form.elements.systemPrompt.value,
     });
   });
 

@@ -13,7 +13,7 @@ export function renderUsageView(container, state, handlers) {
 
   if (!stats || (!stats.totalTokens && !stats.requests)) {
     container.innerHTML = `
-      <div class="empty-state">
+      <div class="empty-state usage-empty">
         <strong>暂无用量数据</strong>
         <span>开始对话后，这里会显示 token 用量、请求和工具调用统计。</span>
       </div>
@@ -57,46 +57,54 @@ export function renderUsageView(container, state, handlers) {
     .join("");
 
   container.innerHTML = `
-    <div class="metric-grid">
-      <div class="metric"><span>总 Token</span><strong>${formatNum(total)}</strong></div>
-      <div class="metric"><span>请求</span><strong>${formatNum(requests)}</strong></div>
-      <div class="metric"><span>Completion 占比</span><strong>${prompt + completion > 0 ? `${completionPct}%` : "—"}</strong></div>
-      <div class="metric"><span>工具调用</span><strong>${formatNum(toolCalls)}</strong></div>
-    </div>
-    <div class="breakdown">
-      <div class="breakdown-label">
-        <span>Prompt ${promptPct}%</span>
-        <span>Completion ${completionPct}%</span>
+    <div class="usage-page">
+      <div class="metric-grid usage-metrics">
+        <div class="metric metric-primary"><span>总 Token</span><strong>${formatNum(total)}</strong></div>
+        <div class="metric"><span>请求</span><strong>${formatNum(requests)}</strong></div>
+        <div class="metric"><span>Completion 占比</span><strong>${prompt + completion > 0 ? `${completionPct}%` : "—"}</strong></div>
+        <div class="metric"><span>工具调用</span><strong>${formatNum(toolCalls)}</strong></div>
       </div>
-      <div class="breakdown-bar" title="Prompt vs Completion">
-        <span class="seg-prompt" style="width:${promptPct}%"></span>
-        <span class="seg-completion" style="width:${completionPct}%"></span>
+      <div class="breakdown usage-breakdown">
+        <div class="breakdown-label">
+          <span>Prompt ${formatNum(prompt)} · ${promptPct}%</span>
+          <span>Completion ${formatNum(completion)} · ${completionPct}%</span>
+        </div>
+        <div class="breakdown-bar" title="Prompt vs Completion">
+          <span class="seg-prompt" style="width:${promptPct}%"></span>
+          <span class="seg-completion" style="width:${completionPct}%"></span>
+        </div>
       </div>
-    </div>
 
-    <div class="stats-head">
-      <h3>趋势</h3>
-      <div class="stats-refreshed">${formatRefreshed(state.lastStatsRefreshAt)}</div>
-    </div>
-    <div class="trend-chart">${dayBars || '<div class="empty-state">暂无按日数据</div>'}</div>
-    <button class="text-button" data-action="refresh-stats" type="button">${icon("refresh")} 刷新统计</button>
+      <section class="trend-card">
+        <div class="stats-head">
+          <div>
+            <h3>趋势</h3>
+            <div class="stats-refreshed">${formatRefreshed(state.lastStatsRefreshAt)}</div>
+          </div>
+          <button class="text-button" data-action="refresh-stats" type="button">${icon("refresh")} 刷新</button>
+        </div>
+        <div class="trend-chart" aria-label="按日 token 用量趋势">${dayBars || '<div class="empty-state">暂无按日数据</div>'}</div>
+      </section>
 
-    <div class="stats-section">
-      <h3>按模型</h3>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>模型</th><th>Prompt</th><th>Completion</th><th>Total</th><th>请求</th></tr></thead>
-          <tbody>${modelRows || '<tr><td colspan="5">暂无数据</td></tr>'}</tbody>
-        </table>
-      </div>
-    </div>
-    <div class="stats-section">
-      <h3>最近请求</h3>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>模型</th><th>Prompt</th><th>Completion</th><th>Total</th><th>工具</th></tr></thead>
-          <tbody>${recentRows || '<tr><td colspan="5">暂无数据</td></tr>'}</tbody>
-        </table>
+      <div class="usage-tables">
+        <section class="stats-section">
+          <h3>按模型</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>模型</th><th>Prompt</th><th>Completion</th><th>Total</th><th>请求</th></tr></thead>
+              <tbody>${modelRows || '<tr><td colspan="5">暂无数据</td></tr>'}</tbody>
+            </table>
+          </div>
+        </section>
+        <section class="stats-section">
+          <h3>最近请求</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>模型</th><th>Prompt</th><th>Completion</th><th>Total</th><th>工具</th></tr></thead>
+              <tbody>${recentRows || '<tr><td colspan="5">暂无数据</td></tr>'}</tbody>
+            </table>
+          </div>
+        </section>
       </div>
     </div>
   `;
