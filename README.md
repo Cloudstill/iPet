@@ -365,7 +365,7 @@ ipet/
 - Tighter CSP (drop `style-src 'unsafe-inline'`).
 - Replace the CSS sprite with a Live2D model inside `src/components/PetCharacter/`.
 - Frontend smoke tests; multi-round tool-call loop; backend chat abort (a local Stop button already cancels the UI side).
-- macOS / Linux smoke tests (the code is portable but only Windows is verified today).
+- macOS / Linux smoke tests (the code is portable; macOS DMG is built in CI, Linux is not yet built).
 
 </details>
 
@@ -707,7 +707,7 @@ ipet/
 - 收紧 CSP（去掉 `style-src 'unsafe-inline'`）。
 - 在 `src/components/PetCharacter/` 内用 Live2D 模型替换当前 CSS 精灵。
 - 前端 smoke 测试；多轮工具调用循环；后端聊天中断（本地 Stop 按钮已可在 UI 侧取消）。
-- macOS / Linux 冒烟测试（代码本身可移植，但目前仅在 Windows 上验证过）。
+- macOS / Linux 冒烟测试（代码本身可移植；macOS DMG 已在 CI 构建，Linux 暂未构建）。
 
 </details>
 
