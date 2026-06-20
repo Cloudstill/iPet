@@ -21,6 +21,31 @@ const LOCAL_DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// exhaust memory. Mirrors the HTTP response cap for consistency.
 const LOCAL_MAX_OUTPUT_BYTES: usize = HTTP_MAX_RESPONSE_BYTES as usize;
 
+/// Run a synchronous, CPU/blocking builtin tool on Tokio's blocking thread
+/// pool and await its result.
+///
+/// The builtin tool functions (`search_files`, `git_status`, `tesseract`,
+/// …) do real blocking work — `fs` reads, `std::process` spawns, `thread::sleep`.
+/// Calling them directly inside this `async fn` would pin a Tokio worker
+/// thread for the duration of the tool, starving other tasks (IPC, UI events,
+/// concurrent tool calls) on the same runtime. `spawn_blocking` moves the
+/// closure onto a dedicated blocking-pool thread, so the worker that drove
+/// `dispatch_builtin` is freed to service the rest of the runtime while the
+/// tool runs. This mirrors the existing `scan_disk` path (lib.rs:125).
+///
+/// `JoinError` (panic / cancellation) is surfaced as `AppError::Model`; the
+/// tool's own `Result<String, String>` is mapped to `InvalidInput` to match
+/// the prior in-line behavior.
+async fn run_blocking<F>(f: F) -> AppResult<String>
+where
+    F: FnOnce() -> Result<String, String> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|err| AppError::Model(format!("builtin tool task failed: {err}")))?
+        .map_err(AppError::InvalidInput)
+}
+
 #[derive(Clone)]
 pub struct ToolDispatcher {
     system: Arc<Mutex<SystemMonitor>>,
@@ -107,96 +132,94 @@ impl ToolDispatcher {
                 let args =
                     serde_json::from_str::<ipet_tool_desktop_tools::SearchFilesArgs>(arguments)
                         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-                ipet_tool_desktop_tools::search_files(args).map_err(AppError::InvalidInput)
+                run_blocking(move || ipet_tool_desktop_tools::search_files(args)).await
             }
             "read_text_file" => {
                 let args =
                     serde_json::from_str::<ipet_tool_desktop_tools::ReadTextFileArgs>(arguments)
                         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-                ipet_tool_desktop_tools::read_text_file(args).map_err(AppError::InvalidInput)
+                run_blocking(move || ipet_tool_desktop_tools::read_text_file(args)).await
             }
             "git_status" => {
                 let args =
                     serde_json::from_str::<ipet_tool_desktop_tools::GitStatusArgs>(arguments)
                         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-                ipet_tool_desktop_tools::git_status(args).map_err(AppError::InvalidInput)
+                run_blocking(move || ipet_tool_desktop_tools::git_status(args)).await
             }
             "list_processes" => {
                 let args =
                     serde_json::from_str::<ipet_tool_desktop_tools::ListProcessesArgs>(arguments)
                         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-                ipet_tool_desktop_tools::list_processes(args).map_err(AppError::InvalidInput)
+                run_blocking(move || ipet_tool_desktop_tools::list_processes(args)).await
             }
             "network_status" => {
                 let args =
                     serde_json::from_str::<ipet_tool_desktop_tools::NetworkStatusArgs>(arguments)
                         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-                ipet_tool_desktop_tools::network_status(args).map_err(AppError::InvalidInput)
+                run_blocking(move || ipet_tool_desktop_tools::network_status(args)).await
             }
             "clipboard_read" => {
                 let args =
                     serde_json::from_str::<ipet_tool_desktop_tools::ClipboardReadArgs>(arguments)
                         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-                ipet_tool_desktop_tools::clipboard_read(args).map_err(AppError::InvalidInput)
+                run_blocking(move || ipet_tool_desktop_tools::clipboard_read(args)).await
             }
             "open_path" => {
                 let args =
                     serde_json::from_str::<ipet_tool_desktop_tools::OpenPathArgs>(arguments)
                         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-                ipet_tool_desktop_tools::open_path(args).map_err(AppError::InvalidInput)
+                run_blocking(move || ipet_tool_desktop_tools::open_path(args)).await
             }
             "recent_system_errors" => {
                 let args = serde_json::from_str::<
                     ipet_tool_desktop_tools::RecentSystemErrorsArgs,
                 >(arguments)
                 .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-                ipet_tool_desktop_tools::recent_system_errors(args)
-                    .map_err(AppError::InvalidInput)
+                run_blocking(move || ipet_tool_desktop_tools::recent_system_errors(args)).await
             }
             "package_scripts" => {
                 let args =
                     serde_json::from_str::<ipet_tool_desktop_tools::PackageScriptsArgs>(arguments)
                         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-                ipet_tool_desktop_tools::package_scripts(args).map_err(AppError::InvalidInput)
+                run_blocking(move || ipet_tool_desktop_tools::package_scripts(args)).await
             }
             "run_project_check" => {
                 let args = serde_json::from_str::<
                     ipet_tool_desktop_tools::RunProjectCheckArgs,
                 >(arguments)
                 .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-                ipet_tool_desktop_tools::run_project_check(args).map_err(AppError::InvalidInput)
+                run_blocking(move || ipet_tool_desktop_tools::run_project_check(args)).await
             }
             "disk_cleanup_candidates" => {
                 let args = serde_json::from_str::<
                     ipet_tool_desktop_tools::DiskCleanupCandidatesArgs,
                 >(arguments)
                 .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-                ipet_tool_desktop_tools::disk_cleanup_candidates(args)
-                    .map_err(AppError::InvalidInput)
+                run_blocking(move || ipet_tool_desktop_tools::disk_cleanup_candidates(args)).await
             }
             "create_note" => {
                 let args =
                     serde_json::from_str::<ipet_tool_desktop_tools::CreateNoteArgs>(arguments)
                         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-                ipet_tool_desktop_tools::create_note(args).map_err(AppError::InvalidInput)
+                run_blocking(move || ipet_tool_desktop_tools::create_note(args)).await
             }
             "weather_lookup" => {
                 let args =
                     serde_json::from_str::<ipet_tool_desktop_tools::WeatherLookupArgs>(arguments)
                         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-                ipet_tool_desktop_tools::weather_lookup(args).map_err(AppError::InvalidInput)
+                run_blocking(move || ipet_tool_desktop_tools::weather_lookup(args)).await
             }
             "web_search" => {
                 let args =
                     serde_json::from_str::<ipet_tool_desktop_tools::WebSearchArgs>(arguments)
                         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-                ipet_tool_desktop_tools::web_search(args).map_err(AppError::InvalidInput)
+                run_blocking(move || ipet_tool_desktop_tools::web_search(args)).await
             }
             "screenshot_ocr" => {
                 let args =
                     serde_json::from_str::<ipet_tool_desktop_tools::ScreenshotOcrArgs>(arguments)
                         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-                ipet_tool_desktop_tools::screenshot_ocr(args).map_err(AppError::InvalidInput)
+                run_blocking(move || ipet_tool_desktop_tools::screenshot_ocr(args)).await
             }
             other => Err(AppError::InvalidInput(format!("未知内置工具: {other}"))),
         }
