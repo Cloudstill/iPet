@@ -221,6 +221,43 @@ impl ToolDispatcher {
                         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
                 run_blocking(move || ipet_tool_desktop_tools::screenshot_ocr(args)).await
             }
+            // Long-term memory tools. Unlike the desktop tools above, these
+            // touch `Storage` (SQLite under a std Mutex), so they live in the
+            // dispatcher rather than the dependency-light desktop_tools crate —
+            // keeps the tool crate free of a storage/tokio dependency and
+            // avoids a circular one. Storage I/O is blocking, so run it on the
+            // blocking pool just like the other builtins.
+            "memory_save" => {
+                let args = serde_json::from_str::<MemorySaveArgs>(arguments)
+                    .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+                let storage = self.storage.clone();
+                run_blocking(move || {
+                    let category = args.category.as_deref().unwrap_or("general");
+                    let memory = storage
+                        .save_memory(&args.key, &args.content, category)
+                        .map_err(|e| e.to_string())?;
+                    serde_json::to_string(&memory).map_err(|err| err.to_string())
+                })
+                .await
+            }
+            "memory_search" => {
+                let args = serde_json::from_str::<MemorySearchArgs>(arguments)
+                    .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+                let storage = self.storage.clone();
+                run_blocking(move || {
+                    let limit = args.limit.unwrap_or(8).clamp(1, 50);
+                    let hits = storage
+                        .search_memories(&args.query, limit)
+                        .map_err(|e| e.to_string())?;
+                    serde_json::to_string(&json!({
+                        "query": args.query,
+                        "resultCount": hits.len(),
+                        "memories": hits
+                    }))
+                    .map_err(|err| err.to_string())
+                })
+                .await
+            }
             other => Err(AppError::InvalidInput(format!("未知内置工具: {other}"))),
         }
     }
@@ -459,6 +496,23 @@ struct DiskScanArgs {
     path: String,
     max_depth: Option<usize>,
     max_children: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MemorySaveArgs {
+    key: String,
+    content: String,
+    #[serde(default)]
+    category: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MemorySearchArgs {
+    query: String,
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 #[cfg(test)]

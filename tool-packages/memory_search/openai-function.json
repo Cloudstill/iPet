@@ -1,0 +1,27 @@
+{
+  "type": "function",
+  "function": {
+    "name": "memory_search",
+    "description": "按关键词检索记忆库中相关的事实与偏好，返回匹配条目。当当前问题可能与用户的历史偏好、项目背景或之前记下的事实相关时调用，召回跨会话记忆辅助回答。",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "检索关键词，按记忆的 key、content、category 做子串匹配（不区分大小写）。空串则返回最近更新的记忆。"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "default": 8,
+          "description": "最多返回多少条记忆。"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

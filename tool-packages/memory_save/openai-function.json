@@ -1,0 +1,30 @@
+{
+  "type": "function",
+  "function": {
+    "name": "memory_save",
+    "description": "把一条值得长期记住的事实或用户偏好写入记忆库（跨会话持久）。相同 key 会更新而非新增。用于记住用户身份、偏好、项目背景等，让后续对话无需重复说明。仅保存必要信息，避免敏感隐私。",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "key",
+        "content"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "记忆的稳定标识键，例如 user_role、project_stack、preference_dark_mode。相同 key 视为同一条记忆，会更新内容。"
+        },
+        "content": {
+          "type": "string",
+          "description": "记忆正文，一句话概括即可，避免冗长。"
+        },
+        "category": {
+          "type": "string",
+          "default": "general",
+          "description": "可选分类，例如 user、preference、project、fact。便于管理与检索。"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

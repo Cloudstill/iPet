@@ -1,0 +1,37 @@
+{
+  "name": "memory_search",
+  "displayName": "检索记忆",
+  "description": "按关键词检索记忆库中相关的事实与偏好，返回匹配条目。当当前问题可能与用户的历史偏好、项目背景或之前记下的事实相关时调用，召回跨会话记忆辅助回答。",
+  "kind": "builtin",
+  "enabled": true,
+  "builtIn": true,
+  "version": "1.0.0",
+  "runtime": {
+    "type": "rust-builtin",
+    "dispatcher": "ToolDispatcher::dispatch_builtin",
+    "source": "src-tauri/src/tool_dispatcher.rs"
+  },
+  "parameters": {
+    "type": "object",
+    "required": ["query"],
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "检索关键词，按记忆的 key、content、category 做子串匹配（不区分大小写）。空串则返回最近更新的记忆。"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50,
+        "default": 8,
+        "description": "最多返回多少条记忆。"
+      }
+    },
+    "additionalProperties": false
+  },
+  "permissions": ["memory.read"],
+  "safety": {
+    "readOnly": true,
+    "notes": "只读检索本地记忆库；匹配到的记忆会更新 last_used_at 与 use_count，用于后续遗忘/整理。"
+  }
+}

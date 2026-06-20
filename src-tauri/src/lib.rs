@@ -17,7 +17,7 @@ use llm_client::{ChatRequest, ChatTurnResult, LlmClient};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
-use storage::{ChatRecord, Storage, TokenUsageStats, ToolConfig, ToolConfigInput};
+use storage::{ChatRecord, ChatSession, Memory, Storage, TokenUsageStats, ToolConfig, ToolConfigInput};
 use tauri::{Emitter, LogicalSize, Manager, State, Window};
 use tokio::sync::Mutex;
 use tool_dispatcher::ToolDispatcher;
@@ -43,6 +43,18 @@ pub struct AppState {
     /// Active disk scans keyed by caller-provided id so they can be cancelled
     /// mid-flight. Entries are removed when the scan task exits.
     scans: Arc<StdMutex<HashMap<String, ScanCancellation>>>,
+    /// The session new messages are written to / recent messages are read
+    /// from. Frontend-driven `set_current_session` updates this; startup seeds
+    /// it from `ensure_default_session` so there's always a valid id.
+    current_session_id: Arc<StdMutex<i64>>,
+}
+
+impl AppState {
+    /// Read the active session id. Panics only if the mutex is poisoned, which
+    /// would indicate a panic in another command — fatal enough to surface.
+    fn current_session(&self) -> i64 {
+        *self.current_session_id.lock().expect("session mutex poisoned")
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -163,10 +175,108 @@ fn get_recent_messages(
     limit: Option<usize>,
     state: State<'_, AppState>,
 ) -> Result<Vec<ChatRecord>, String> {
+    let session_id = state.current_session();
     state
         .storage
-        .recent_messages(limit.unwrap_or(40).clamp(1, 200))
+        .recent_messages(session_id, limit.unwrap_or(40).clamp(1, 200))
         .map_err(public_error)
+}
+
+// --- sessions: multi-session chat management ------------------------------
+
+#[tauri::command]
+fn list_sessions(state: State<'_, AppState>) -> Result<Vec<ChatSession>, String> {
+    state.storage.list_sessions().map_err(public_error)
+}
+
+#[tauri::command]
+fn create_session(
+    title: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<ChatSession, String> {
+    state
+        .storage
+        .create_session(title.as_deref())
+        .map_err(public_error)
+}
+
+/// Switch the active session. Returns the resolved id so the frontend can
+/// confirm; a non-existent id is rejected so the UI never points at a ghost.
+#[tauri::command]
+fn set_current_session(
+    id: i64,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    let session = state
+        .storage
+        .get_session(id)
+        .map_err(public_error)?
+        .ok_or_else(|| format!("会话不存在: {id}"))?;
+    *state.current_session_id.lock().map_err(|_| "session mutex poisoned")? = session.id;
+    Ok(session.id)
+}
+
+/// The session new messages currently land in. Frontend mirrors this in its
+/// own state; this command reconciles after a restart or cross-window action.
+#[tauri::command]
+fn get_current_session(state: State<'_, AppState>) -> Result<i64, String> {
+    Ok(state.current_session())
+}
+
+#[tauri::command]
+fn rename_session(
+    id: i64,
+    title: String,
+    state: State<'_, AppState>,
+) -> Result<Option<ChatSession>, String> {
+    state
+        .storage
+        .rename_session(id, &title)
+        .map_err(public_error)
+}
+
+/// Delete a session and its messages. If the deleted session was the active
+/// one, switch to whichever session is now most-recently-active (creating a
+/// fresh one if the table is empty) so there's always a valid current id.
+#[tauri::command]
+fn delete_session(id: i64, state: State<'_, AppState>) -> Result<i64, String> {
+    state.storage.delete_session(id).map_err(public_error)?;
+    let was_current = state.current_session() == id;
+    if was_current {
+        let next = state
+            .storage
+            .ensure_default_session()
+            .map_err(public_error)?;
+        *state.current_session_id.lock().map_err(|_| "session mutex poisoned")? = next;
+        Ok(next)
+    } else {
+        Ok(state.current_session())
+    }
+}
+
+// --- memories: long-term memory management --------------------------------
+
+#[tauri::command]
+fn list_memories(state: State<'_, AppState>) -> Result<Vec<Memory>, String> {
+    state.storage.list_memories().map_err(public_error)
+}
+
+#[tauri::command]
+fn update_memory(
+    id: i64,
+    content: String,
+    category: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Option<Memory>, String> {
+    state
+        .storage
+        .update_memory(id, &content, category.as_deref())
+        .map_err(public_error)
+}
+
+#[tauri::command]
+fn delete_memory(id: i64, state: State<'_, AppState>) -> Result<bool, String> {
+    state.storage.delete_memory(id).map_err(public_error)
 }
 
 #[tauri::command]
@@ -380,14 +490,29 @@ async fn send_chat_message_inner(
 ) -> AppResult<()> {
     emit_chat_event(&window, &request.request_id, "start", "")?;
 
+    let session_id = state.current_session();
     if let Some(last_user) = request.messages.iter().rev().find(|msg| msg.role == "user") {
         state
             .storage
-            .save_chat_message("user", last_user.content.trim())?;
+            .save_chat_message(session_id, "user", last_user.content.trim())?;
     }
 
     let settings = state.storage.load_llm_settings()?;
-    let client = LlmClient::new(settings)?;
+    // Pull a small, bounded slice of recently-updated memories for stable
+    // system-prompt injection (Tier 1 dual-track: this is the always-on half;
+    // memory_search is the on-demand half). Failures here are non-fatal — a
+    // turn without injected memory still works.
+    let memory_slice = state
+        .storage
+        .recent_memories(8)
+        .unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "failed to load recent memories for prompt");
+            Vec::new()
+        })
+        .into_iter()
+        .map(|m| format!("- [{}] {}", m.key, m.content.replace('\n', " ")))
+        .collect::<Vec<_>>();
+    let client = LlmClient::new(settings)?.with_recent_memories(memory_slice);
     let dispatcher = ToolDispatcher::new(state.system.clone(), state.storage.clone());
     let has_tools = !dispatcher.active_definitions()?.is_empty();
 
@@ -438,7 +563,7 @@ async fn send_chat_message_inner(
     if !assistant_text.trim().is_empty() {
         state
             .storage
-            .save_chat_message("assistant", assistant_text.trim())?;
+            .save_chat_message(session_id, "assistant", assistant_text.trim())?;
     }
     emit_chat_event(&window, &request.request_id, "done", "")?;
     Ok(())
@@ -531,11 +656,21 @@ pub fn run() {
                 Err(err) => tracing::warn!(error = %err, "data retention sweep failed"),
             }
             let system = Arc::new(Mutex::new(SystemMonitor::new()));
+            // There must always be a session to write into; create one if the
+            // DB is fresh (the v3 migration back-fills one for pre-v3 DBs).
+            let current_session_id = match storage.ensure_default_session() {
+                Ok(id) => id,
+                Err(err) => {
+                    tracing::error!(error = %err, "failed to ensure default session");
+                    return Err(Box::new(err));
+                }
+            };
             tracing::info!(data_dir = %data_dir.display(), "iPet backend initialized");
             app.manage(AppState {
                 storage,
                 system,
                 scans: Arc::new(StdMutex::new(HashMap::new())),
+                current_session_id: Arc::new(StdMutex::new(current_session_id)),
             });
             Ok(())
         })
@@ -546,6 +681,15 @@ pub fn run() {
             scan_disk,
             cancel_disk_scan,
             get_recent_messages,
+            list_sessions,
+            create_session,
+            set_current_session,
+            get_current_session,
+            rename_session,
+            delete_session,
+            list_memories,
+            update_memory,
+            delete_memory,
             list_tools,
             save_tool,
             set_tool_enabled,

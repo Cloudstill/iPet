@@ -17,7 +17,9 @@ use std::sync::Mutex;
 
 mod caches;
 mod chat;
+mod memories;
 mod preferences;
+mod sessions;
 mod token_usage;
 mod tools;
 
@@ -53,6 +55,9 @@ const WEATHER_LOOKUP_TOOL_JSON: &str =
 const WEB_SEARCH_TOOL_JSON: &str = include_str!("../../../tool-packages/web_search/tool.json");
 const SCREENSHOT_OCR_TOOL_JSON: &str =
     include_str!("../../../tool-packages/screenshot_ocr/tool.json");
+const MEMORY_SAVE_TOOL_JSON: &str = include_str!("../../../tool-packages/memory_save/tool.json");
+const MEMORY_SEARCH_TOOL_JSON: &str =
+    include_str!("../../../tool-packages/memory_search/tool.json");
 
 /// Minimal projection of a `tool.json` manifest — just the fields needed to
 /// seed a builtin `ToolConfig`. The full manifest (runtime, permissions,
@@ -96,6 +101,36 @@ pub struct ChatRecord {
     pub role: String,
     pub content: String,
     pub created_at: String,
+}
+
+/// One chat session (a thread of `chat_messages`). `last_message_at` is the
+/// timestamp of the most recent message, denormalized so the session list can
+/// be sorted by recency without joining the message table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSession {
+    pub id: i64,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_message_at: Option<String>,
+}
+
+/// A single long-term memory entry. Memories persist across sessions and are
+/// surfaced to the model via system-prompt injection + the memory_search tool
+/// (ref-plan §memory). `last_used_at` / `use_count` drive the injection
+/// ordering and let users spot stale memories to prune.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Memory {
+    pub id: i64,
+    pub key: String,
+    pub content: String,
+    pub category: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_used_at: Option<String>,
+    pub use_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -316,7 +351,62 @@ const MIGRATIONS: &[fn(&Connection) -> AppResult<()>] = &[
         conn.execute("ALTER TABLE tool_configs ADD COLUMN local_json TEXT", [])?;
         Ok(())
     },
-    // Add future v2 -> v3 migrations here as append-only entries.
+    // v2 -> v3: multi-session + long-term memory. Adds a `sessions` table,
+    // a `memories` table, and a `session_id` FK on chat_messages. Existing
+    // rows predate sessions, so they're back-filled onto a single "默认会话"
+    // created here; a NOT NULL + FK is then added to enforce it going forward.
+    |conn| -> AppResult<()> {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_message_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key TEXT NOT NULL,
+                content TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'general',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_used_at TEXT,
+                use_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
+            CREATE INDEX IF NOT EXISTS idx_memories_updated ON memories(updated_at);
+            "#,
+        )?;
+
+        // Back-fill: every pre-v3 chat_messages row joins a default session.
+        // On a fresh DB there are no chat_messages and no sessions yet — we
+        // create the default session unconditionally so the FK has a target,
+        // then point any pre-existing rows at it. (ensure_default_session would
+        // also handle the empty case, but the migration must not assume it'll
+        // be called.)
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO sessions (title, created_at, updated_at)
+             SELECT '默认会话', ?1, ?1
+             WHERE NOT EXISTS (SELECT 1 FROM sessions)",
+            params![now],
+        )?;
+        let default_session_id: i64 = conn.query_row(
+            "SELECT id FROM sessions ORDER BY id ASC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?;
+        conn.execute("ALTER TABLE chat_messages ADD COLUMN session_id INTEGER", [])?;
+        conn.execute(
+            "UPDATE chat_messages SET session_id = ?1 WHERE session_id IS NULL",
+            params![default_session_id],
+        )?;
+        Ok(())
+    },
+    // Add future v3 -> v4 migrations here as append-only entries.
 ];
 
 impl Storage {
@@ -447,6 +537,8 @@ impl Storage {
             builtin_tool_from_manifest(WEATHER_LOOKUP_TOOL_JSON)?,
             builtin_tool_from_manifest(WEB_SEARCH_TOOL_JSON)?,
             builtin_tool_from_manifest(SCREENSHOT_OCR_TOOL_JSON)?,
+            builtin_tool_from_manifest(MEMORY_SAVE_TOOL_JSON)?,
+            builtin_tool_from_manifest(MEMORY_SEARCH_TOOL_JSON)?,
         ];
 
         for tool in tools {
@@ -719,6 +811,8 @@ mod tests {
             "weather_lookup",
             "web_search",
             "screenshot_ocr",
+            "memory_save",
+            "memory_search",
         ] {
             assert!(
                 names.contains(&expected),
@@ -726,7 +820,7 @@ mod tests {
             );
         }
         assert!(
-            tools.iter().filter(|t| t.built_in).count() >= 17,
+            tools.iter().filter(|t| t.built_in).count() >= 19,
             "built-in tools must keep their built_in flag"
         );
     }
@@ -760,11 +854,12 @@ mod tests {
     #[test]
     fn chat_messages_round_trip_in_chronological_order() {
         let (_dir, storage) = fresh_storage();
-        storage.save_chat_message("user", "hello").unwrap();
-        storage.save_chat_message("assistant", "hi there").unwrap();
-        storage.save_chat_message("user", "how are you").unwrap();
+        let sid = storage.ensure_default_session().unwrap();
+        storage.save_chat_message(sid, "user", "hello").unwrap();
+        storage.save_chat_message(sid, "assistant", "hi there").unwrap();
+        storage.save_chat_message(sid, "user", "how are you").unwrap();
 
-        let recent = storage.recent_messages(10).unwrap();
+        let recent = storage.recent_messages(sid, 10).unwrap();
         assert_eq!(recent.len(), 3);
         // recent_messages returns oldest-first after the internal reverse.
         let contents: Vec<_> = recent.iter().map(|r| r.content.as_str()).collect();
@@ -774,12 +869,13 @@ mod tests {
     #[test]
     fn recent_messages_respects_limit() {
         let (_dir, storage) = fresh_storage();
+        let sid = storage.ensure_default_session().unwrap();
         for i in 0..5 {
             storage
-                .save_chat_message("user", &format!("msg-{i}"))
+                .save_chat_message(sid, "user", &format!("msg-{i}"))
                 .unwrap();
         }
-        let recent = storage.recent_messages(2).unwrap();
+        let recent = storage.recent_messages(sid, 2).unwrap();
         assert_eq!(recent.len(), 2);
         // After the reverse, we should see the two newest in chronological order.
         let contents: Vec<_> = recent.iter().map(|r| r.content.as_str()).collect();
@@ -913,9 +1009,10 @@ mod tests {
     #[test]
     fn prune_caps_chat_history_to_policy() {
         let (_dir, storage) = fresh_storage();
+        let sid = storage.ensure_default_session().unwrap();
         for i in 0..30 {
             storage
-                .save_chat_message("user", &format!("msg-{i}"))
+                .save_chat_message(sid, "user", &format!("msg-{i}"))
                 .unwrap();
         }
         let policy = RetentionPolicy {
@@ -924,12 +1021,120 @@ mod tests {
         };
         let report = storage.prune_with_policy(policy).unwrap();
         assert_eq!(report.chat_removed, 20);
-        let recent = storage.recent_messages(100).unwrap();
+        let recent = storage.recent_messages(sid, 100).unwrap();
         assert_eq!(recent.len(), 10);
         // recent_messages reverses inside, so it's chronological — oldest of
         // the survivors should be msg-20, newest msg-29.
         assert_eq!(recent.first().unwrap().content, "msg-20");
         assert_eq!(recent.last().unwrap().content, "msg-29");
+    }
+
+    #[test]
+    fn sessions_create_list_rename_delete() {
+        let (_dir, storage) = fresh_storage();
+        // fresh_storage opens a v3 DB, whose migration seeds one "默认会话".
+        let seeded = storage.list_sessions().unwrap();
+        assert_eq!(seeded.len(), 1);
+        assert_eq!(seeded[0].title, "默认会话");
+
+        let s1 = storage.create_session(Some("First")).unwrap();
+        let s2 = storage.create_session(Some("  spaced  ")).unwrap();
+        assert_eq!(s1.title, "First");
+        assert_eq!(s2.title, "spaced", "title is trimmed");
+        // empty title falls back to the default label
+        let s3 = storage.create_session(Some("   ")).unwrap();
+        assert_eq!(s3.title, "新会话");
+
+        storage.save_chat_message(s1.id, "user", "hello").unwrap();
+        let listed = storage.list_sessions().unwrap();
+        // s1 has the most recent message → sorts first despite being created last-but-one.
+        assert_eq!(listed.first().unwrap().id, s1.id);
+        assert_eq!(listed.len(), 4, "seeded + three created");
+
+        let renamed = storage.rename_session(s2.id, "Renamed").unwrap().unwrap();
+        assert_eq!(renamed.title, "Renamed");
+        // empty rename is a no-op that just returns the row unchanged
+        let unchanged = storage.rename_session(s2.id, "   ").unwrap().unwrap();
+        assert_eq!(unchanged.title, "Renamed");
+
+        assert!(storage.delete_session(s3.id).unwrap());
+        assert!(storage.get_session(s3.id).unwrap().is_none());
+        // deleting the session also clears its messages
+        let sid = s3.id;
+        assert!(storage.recent_messages(sid, 10).unwrap().is_empty());
+        assert_eq!(storage.list_sessions().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn ensure_default_session_is_idempotent() {
+        let (_dir, storage) = fresh_storage();
+        let id1 = storage.ensure_default_session().unwrap();
+        let id2 = storage.ensure_default_session().unwrap();
+        assert_eq!(id1, id2, "second call reuses the existing session");
+    }
+
+    #[test]
+    fn messages_are_isolated_per_session() {
+        let (_dir, storage) = fresh_storage();
+        let a = storage.create_session(Some("A")).unwrap();
+        let b = storage.create_session(Some("B")).unwrap();
+        storage.save_chat_message(a.id, "user", "in A").unwrap();
+        storage.save_chat_message(b.id, "user", "in B").unwrap();
+        let a_msgs = storage.recent_messages(a.id, 10).unwrap();
+        let b_msgs = storage.recent_messages(b.id, 10).unwrap();
+        assert_eq!(a_msgs.len(), 1);
+        assert_eq!(a_msgs[0].content, "in A");
+        assert_eq!(b_msgs[0].content, "in B");
+    }
+
+    #[test]
+    fn memory_upsert_and_search() {
+        let (_dir, storage) = fresh_storage();
+        let m = storage
+            .save_memory("user_role", "Rust developer", "user")
+            .unwrap();
+        assert_eq!(m.key, "user_role");
+        assert_eq!(m.use_count, 0);
+
+        // same key → upsert, content refreshed, use_count preserved
+        let m2 = storage
+            .save_memory("user_role", "Rust + Tauri developer", "user")
+            .unwrap();
+        assert_eq!(m2.id, m.id, "upsert reuses the row");
+        assert_eq!(m2.content, "Rust + Tauri developer");
+        assert_eq!(m2.use_count, 0, "a re-save is not a use");
+
+        // search hits + bumps usage
+        let hits = storage.search_memories("rust", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].key, "user_role");
+        let after = storage.get_memory_by_key("user_role").unwrap().unwrap();
+        assert_eq!(after.use_count, 1);
+        assert!(after.last_used_at.is_some());
+
+        // empty query falls back to recent (recency-ordered) list
+        let recent = storage.search_memories("", 10).unwrap();
+        assert_eq!(recent.len(), 1);
+
+        // empty key is rejected
+        let err = storage.save_memory("   ", "x", "y").unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn memory_update_and_delete_from_ui() {
+        let (_dir, storage) = fresh_storage();
+        let m = storage.save_memory("k1", "original", "general").unwrap();
+        let updated = storage.update_memory(m.id, "edited", Some("pref")).unwrap().unwrap();
+        assert_eq!(updated.content, "edited");
+        assert_eq!(updated.category, "pref");
+        // category=None leaves category untouched
+        let u2 = storage.update_memory(m.id, "again", None).unwrap().unwrap();
+        assert_eq!(u2.category, "pref");
+        // update of a non-existent id → None
+        assert!(storage.update_memory(9999, "x", None).unwrap().is_none());
+        assert!(storage.delete_memory(m.id).unwrap());
+        assert!(storage.get_memory_by_key("k1").unwrap().is_none());
     }
 
     #[test]

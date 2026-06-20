@@ -53,6 +53,13 @@ pub struct ChatTurnResult {
 pub struct LlmClient {
     settings: LlmSettings,
     http: reqwest::Client,
+    /// Recently-updated long-term memories (cross-session), formatted as
+    /// single-line strings, appended to the system prompt on every turn so the
+    /// model stays continuously aware of user facts/preferences without having
+    /// to call `memory_search`. Bounded by the caller (recent_memories limit)
+    /// so the prompt can't grow unbounded. Tier 1 stable-injection half of the
+    /// dual-track memory design; `memory_search` is the on-demand other half.
+    recent_memories: Vec<String>,
 }
 
 impl LlmClient {
@@ -71,7 +78,16 @@ impl LlmClient {
         Ok(Self {
             settings,
             http: reqwest::Client::new(),
+            recent_memories: Vec::new(),
         })
+    }
+
+    /// Attach the cross-session memory slice to inject into the system prompt.
+    /// Each entry should already be a self-contained line; `build_messages`
+    /// joins them under a labeled block. Pass an empty vec to disable.
+    pub fn with_recent_memories(mut self, memories: Vec<String>) -> Self {
+        self.recent_memories = memories;
+        self
     }
 
     pub fn model(&self) -> &str {
@@ -282,9 +298,22 @@ impl LlmClient {
     }
 
     fn build_messages(&self, ui_messages: &[ChatUiMessage]) -> Vec<OpenAiMessage> {
+        // System prompt + the stable memory slice. Memories are joined under a
+        // labeled block so the model treats them as durable context, not part
+        // of the persona instructions. If there are none, the system message is
+        // just the prompt — no wasted tokens.
+        let system_content = if self.recent_memories.is_empty() {
+            self.settings.system_prompt.clone()
+        } else {
+            format!(
+                "{prompt}\n\n# 长期记忆（跨会话，持续生效）\n{memories}",
+                prompt = self.settings.system_prompt,
+                memories = self.recent_memories.join("\n")
+            )
+        };
         let mut messages = vec![OpenAiMessage {
             role: "system".to_string(),
-            content: Some(self.settings.system_prompt.clone()),
+            content: Some(system_content),
             tool_call_id: None,
             tool_calls: None,
         }];
