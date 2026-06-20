@@ -192,16 +192,29 @@ jobs:
             test -n "${{ steps.files.outputs.zip }}" && echo "- \`$(basename "${{ steps.files.outputs.zip }}")\` — Windows 绿色版(解压即用,需系统已装 WebView2 运行时)"
             test -n "${{ steps.files.outputs.dmg }}" && echo "- \`$(basename "${{ steps.files.outputs.dmg }}")\` — macOS DMG"
             echo
-            # Human-readable changelog from the annotated tag body (the bulleted
-            # feature list written when tagging). Falls back gracefully if the
-            # tag is lightweight / has no body.
-            tag_body="$(git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME")"
-            if [ -n "$tag_body" ]; then
+          } > /tmp/release_notes.md
+
+          # Human-readable changelog from the annotated tag body (the bulleted
+          # feature list written when tagging). Falls back gracefully if the
+          # tag is lightweight / has no body.
+          #
+          # IMPORTANT: do NOT capture the tag body into a shell variable via
+          # $(...). A tag body containing backticks (e.g. `crate names`,
+          # `spawn_blocking`) gets re-evaluated as command substitution when the
+          # variable is later echoed, corrupting the notes. Instead write git's
+          # raw output straight to a file and `cat` it — the body never passes
+          # through a second shell evaluation, so backticks stay literal.
+          git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME" > /tmp/tag_body.txt
+          if [ -s /tmp/tag_body.txt ]; then
+            {
               echo "### 本次更新"
               echo
-              echo "$tag_body"
+              cat /tmp/tag_body.txt
               echo
-            fi
+            } >> /tmp/release_notes.md
+          fi
+
+          {
             echo "### 自上一个版本以来的提交"
             echo
             # Commits between the previous tag and this one, one-line each.
@@ -212,7 +225,8 @@ jobs:
             else
               git log --pretty=format:'- %s (%h)' -15
             fi
-          } > /tmp/release_notes.md
+          } >> /tmp/release_notes.md
+
           echo "##[group]Release notes preview"
           cat /tmp/release_notes.md
           echo "##[endgroup]"
