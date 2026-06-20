@@ -19,7 +19,7 @@ use tokio::sync::Mutex;
 const LOCAL_DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// Cap on stdout we'll read from a local tool, so a runaway script can't
 /// exhaust memory. Mirrors the HTTP response cap for consistency.
-const LOCAL_MAX_OUTPUT_BYTES: usize = HTTP_MAX_RESPONSE_BYTES as usize;
+const LOCAL_MAX_OUTPUT_BYTES: usize = HTTP_MAX_RESPONSE_BYTES;
 
 /// Run a synchronous, CPU/blocking builtin tool on Tokio's blocking thread
 /// pool and await its result.
@@ -577,6 +577,64 @@ mod tests {
         assert!(
             out.contains("ok"),
             "expected stdout containing 'ok', got: {out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn imported_local_package_runs_script_arg_from_package_cwd() {
+        let (dir, dispatcher) = fresh_dispatcher();
+        let pkg_dir = dir.path().join("pkg-script-cwd");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+
+        let (script_name, command, args) = if cfg!(target_os = "windows") {
+            let script_name = "emit-ok.bat";
+            std::fs::write(pkg_dir.join(script_name), "@echo off\necho script-ok\n").unwrap();
+            (
+                script_name,
+                "cmd".to_string(),
+                vec!["/C".to_string(), script_name.to_string()],
+            )
+        } else {
+            let script_name = "emit-ok.sh";
+            std::fs::write(pkg_dir.join(script_name), "printf script-ok\n").unwrap();
+            (script_name, "sh".to_string(), vec![script_name.to_string()])
+        };
+
+        let manifest = json!({
+            "schemaVersion": 2,
+            "name": "script_cwd_test",
+            "displayName": "Script CWD",
+            "description": "runs a package-local script passed as an arg",
+            "kind": "local",
+            "parameters": {"type": "object", "properties": {}},
+            "local": {
+                "command": command,
+                "args": args,
+                "timeoutSecs": 10
+            }
+        });
+        std::fs::write(
+            pkg_dir.join("tool.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let pkg = crate::tool_package::load_package(&pkg_dir).unwrap();
+        let local = pkg.input.local.as_ref().unwrap();
+        assert_eq!(local.args.last().map(String::as_str), Some(script_name));
+        assert!(
+            local.cwd.is_some(),
+            "imported local packages must default cwd to the package dir"
+        );
+        dispatcher.storage.save_custom_tool(pkg.input).unwrap();
+
+        let out = dispatcher
+            .dispatch("script_cwd_test", "{}")
+            .await
+            .expect("imported package script should run from package cwd");
+        assert!(
+            out.contains("script-ok"),
+            "expected package script stdout, got: {out}"
         );
     }
 

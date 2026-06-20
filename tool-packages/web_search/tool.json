@@ -1,7 +1,7 @@
 {
   "name": "web_search",
   "displayName": "网页搜索",
-  "description": "用免 Key 的 DuckDuckGo Instant Answer 接口搜索，返回摘要与相关链接。注意：仅返回摘要/百科类结果，非完整网页搜索。",
+  "description": "用免 Key 的 DuckDuckGo 搜索公开网页，优先返回 Instant Answer 摘要，并合并普通网页结果的标题、链接和摘要。",
   "kind": "builtin",
   "enabled": true,
   "builtIn": true,
@@ -32,6 +32,6 @@
   "permissions": ["network"],
   "safety": {
     "readOnly": true,
-    "notes": "向 DuckDuckGo Instant Answer API 发起一次 HTTPS GET，带超时与响应大小上限，不发送任何 Key。结果质量有限。"
+    "notes": "向 DuckDuckGo Instant Answer API 与 HTML 搜索结果页发起 HTTPS GET，带超时与响应大小上限，不发送任何 Key。"
   }
 }

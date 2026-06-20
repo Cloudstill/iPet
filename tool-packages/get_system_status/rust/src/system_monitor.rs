@@ -73,8 +73,7 @@ impl SystemMonitor {
     pub fn snapshot(&mut self, process_limit: usize) -> SystemSnapshot {
         self.system.refresh_cpu_usage();
         self.system.refresh_memory();
-        self.system
-            .refresh_processes(ProcessesToUpdate::All, true);
+        self.system.refresh_processes(ProcessesToUpdate::All, true);
         self.disks.refresh_list();
         self.disks.refresh();
 
@@ -155,6 +154,12 @@ impl SystemMonitor {
             process_count,
             sampled_at: chrono::Utc::now().to_rfc3339(),
         }
+    }
+}
+
+impl Default for SystemMonitor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

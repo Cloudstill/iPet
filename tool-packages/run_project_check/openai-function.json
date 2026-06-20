@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "run_project_check",
-    "description": "在指定项目目录下运行白名单内的构建/测试/检查命令（如 npm test、npm run build、cargo check 等），带超时与输出上限。",
+    "description": "在指定项目目录下运行白名单内的构建/测试/检查命令（npm/pnpm/yarn/bun/cargo 常见检查），带超时与输出上限。",
     "parameters": {
       "type": "object",
       "required": [
@@ -16,7 +16,7 @@
         },
         "command": {
           "type": "string",
-          "description": "要运行的命令，必须在白名单内：npm test、npm run test、npm run build、npm run lint、npm run check、npm run typecheck、cargo test、cargo check、cargo build、cargo clippy、cargo fmt --check。"
+          "description": "要运行的命令，必须在白名单内：npm/pnpm/yarn/bun 的 test/build/lint/check/typecheck，或 cargo test/check/build/clippy/fmt --check。"
         },
         "timeoutSecs": {
           "type": "integer",

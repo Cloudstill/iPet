@@ -73,7 +73,10 @@ pub fn load_package(path: &Path) -> AppResult<ImportedPackage> {
     let tool_json_path = resolve_tool_json(path)?;
     let raw = fs::read_to_string(&tool_json_path)?;
     let pkg: ToolPackage = serde_json::from_str(&raw).map_err(|err| {
-        AppError::InvalidInput(format!("tool.json 解析失败 ({}): {err}", tool_json_path.display()))
+        AppError::InvalidInput(format!(
+            "tool.json 解析失败 ({}): {err}",
+            tool_json_path.display()
+        ))
     })?;
 
     if !SUPPORTED_SCHEMA_VERSIONS.contains(&pkg.schema_version) {
@@ -88,9 +91,14 @@ pub fn load_package(path: &Path) -> AppResult<ImportedPackage> {
         )));
     }
 
-    // The package directory — used to resolve relative local command/cwd
-    // paths so a distributed tool keeps working regardless of host CWD.
-    let pkg_dir = tool_json_path.parent().unwrap_or_else(|| Path::new("."));
+    // The package directory is used as the default child cwd for local tools
+    // and as the base for relative local command/cwd paths. Canonicalizing it
+    // here keeps imported package configs independent from the host CWD.
+    let pkg_dir = tool_json_path
+        .parent()
+        .map(fs::canonicalize)
+        .transpose()?
+        .unwrap_or_else(|| PathBuf::from("."));
 
     match pkg.kind.as_str() {
         "http" => {
@@ -134,7 +142,7 @@ pub fn load_package(path: &Path) -> AppResult<ImportedPackage> {
                 enabled: pkg.enabled,
                 parameters: pkg.parameters,
                 http: None,
-                local: Some(resolve_local_config(local, pkg_dir)),
+                local: Some(resolve_local_config(local, &pkg_dir)),
             };
             Ok(ImportedPackage {
                 input,
@@ -154,7 +162,12 @@ pub fn load_package(path: &Path) -> AppResult<ImportedPackage> {
 /// folder anywhere, the stored config still points at the bundled script.
 fn resolve_local_config(local: PackageLocal, pkg_dir: &Path) -> LocalToolConfig {
     let command = resolve_path(&local.command, pkg_dir);
-    let cwd = local.cwd.map(|c| resolve_path(&c, pkg_dir));
+    let cwd = Some(
+        local
+            .cwd
+            .map(|c| resolve_path(&c, pkg_dir))
+            .unwrap_or_else(|| pkg_dir.to_string_lossy().into_owned()),
+    );
     LocalToolConfig {
         command,
         args: local.args,
@@ -173,9 +186,16 @@ fn resolve_path(p: &str, base: &Path) -> String {
     if path.is_absolute() {
         return p.to_string();
     }
+    if p == "." {
+        return base.to_string_lossy().into_owned();
+    }
     // A bare name with no separators is a PATH-resolved interpreter; don't
     // anchor it (that would point at a non-existent file in the pkg dir).
-    let looks_like_path = p.contains('/') || p.contains('\\') || p.contains(".\\") || p.contains("./");
+    let looks_like_path = matches!(p, "." | "..")
+        || p.contains('/')
+        || p.contains('\\')
+        || p.starts_with("./")
+        || p.starts_with(".\\");
     if !looks_like_path {
         return p.to_string();
     }
@@ -303,8 +323,8 @@ mod tests {
     #[test]
     fn loads_local_package_and_resolves_relative_paths() {
         let dir = TempDir::new("pkg-local");
-        // Ship a script alongside tool.json so we can confirm the relative
-        // command is anchored to the package dir.
+        // Ship a script alongside tool.json so the example package can run as
+        // `node echo_tool.js` from its own directory after import.
         std::fs::write(dir.path().join("echo_tool.js"), "// noop").unwrap();
         write_pkg(
             dir.path(),
@@ -329,6 +349,11 @@ mod tests {
         // "node" is a bare name → left as-is (PATH-resolved at spawn).
         assert_eq!(local.command, "node");
         assert_eq!(local.args, vec!["echo_tool.js".to_string()]);
+        let pkg_dir = std::fs::canonicalize(dir.path())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(local.cwd.as_deref(), Some(pkg_dir.as_str()));
         assert_eq!(local.timeout_secs, Some(15));
         // http must not be set on a local tool.
         assert!(pkg.input.http.is_none());
@@ -352,7 +377,10 @@ mod tests {
         );
         let pkg = load_package(dir.path()).unwrap();
         let local = pkg.input.local.as_ref().unwrap();
-        let pkg_dir = dir.path().to_string_lossy().into_owned();
+        let pkg_dir = std::fs::canonicalize(dir.path())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         // Relative command/cwd are joined onto the package dir (forward-slash
         // normalized on the stored string).
         assert!(
@@ -360,10 +388,12 @@ mod tests {
             "command should be anchored to pkg dir: {}",
             local.command
         );
-        assert!(local.command.contains(&pkg_dir.replace('\\', "/"))
-            || local.command.contains(&*pkg_dir)
-            || local.command.contains("run.sh"));
-        assert!(local.cwd.is_some(), "cwd resolved");
+        assert!(
+            local.command.contains(&pkg_dir.replace('\\', "/"))
+                || local.command.contains(&*pkg_dir)
+                || local.command.contains("run.sh")
+        );
+        assert_eq!(local.cwd.as_deref(), Some(pkg_dir.as_str()));
     }
 
     #[test]

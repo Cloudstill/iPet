@@ -1,7 +1,7 @@
 {
   "name": "read_text_file",
   "displayName": "读取文本文件",
-  "description": "读取指定文本文件的部分内容，带字节数和行数上限，适合查看代码、日志和文档片段。",
+  "description": "读取指定文本文件的部分内容，带字节数和行数上限，并返回行窗口、截断和二进制迹象等元信息。",
   "kind": "builtin",
   "enabled": true,
   "builtIn": true,

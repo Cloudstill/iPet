@@ -1,6 +1,7 @@
 use crate::app_error::{AppError, AppResult};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::cmp::Reverse;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -69,7 +70,7 @@ impl ScanContext {
         // listener doesn't get drowned during a tight loop.
         if let Some(cb) = &self.on_progress {
             let now = prev + 1;
-            if now % 256 == 0 {
+            if now.is_multiple_of(256) {
                 cb(now);
             }
         }
@@ -232,13 +233,15 @@ fn scan_node(path: &Path, depth: usize, ctx: &ScanContext) -> AppResult<(DiskNod
         .iter()
         .map(|(node, _)| node.clone())
         .collect::<Vec<_>>();
-    let mut truncated = child_results.iter().any(|(_, was_truncated)| *was_truncated);
+    let mut truncated = child_results
+        .iter()
+        .any(|(_, was_truncated)| *was_truncated);
 
     let size_bytes = children.iter().map(|child| child.size_bytes).sum();
     let file_count = children.iter().map(|child| child.file_count).sum();
     let dir_count = 1 + children.iter().map(|child| child.dir_count).sum::<u64>();
 
-    children.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    children.sort_by_key(|child| Reverse(child.size_bytes));
     if children.len() > ctx.options.max_children {
         children.truncate(ctx.options.max_children);
         truncated = true;
@@ -267,7 +270,11 @@ struct DirSummary {
 
 fn summarize_dir(path: &Path, ctx: &ScanContext) -> DirSummary {
     let mut summary = DirSummary::default();
-    for entry in WalkDir::new(path).follow_links(false).into_iter().filter_map(Result::ok) {
+    for entry in WalkDir::new(path)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
         if ctx.should_stop() {
             break;
         }
@@ -341,7 +348,10 @@ mod tests {
         // sub (50 bytes) should come before a.bin (10 bytes).
         let sub_idx = names.iter().position(|n| n == "sub").unwrap();
         let a_idx = names.iter().position(|n| n == "a.bin").unwrap();
-        assert!(sub_idx < a_idx, "expected larger-first ordering, got {names:?}");
+        assert!(
+            sub_idx < a_idx,
+            "expected larger-first ordering, got {names:?}"
+        );
     }
 
     #[test]
@@ -358,7 +368,10 @@ mod tests {
             .find(|c| c.name == "sub")
             .expect("sub must be present");
         assert!(sub.is_dir);
-        assert!(sub.children.is_empty(), "subtree must be empty at depth cap");
+        assert!(
+            sub.children.is_empty(),
+            "subtree must be empty at depth cap"
+        );
         assert_eq!(sub.size_bytes, 50);
         assert_eq!(sub.file_count, 2);
         assert!(result.truncated);
@@ -368,17 +381,16 @@ mod tests {
     fn max_children_truncates_largest_subset() {
         let dir = TempDir::new("many");
         for (idx, size) in [10u64, 50, 30, 100, 20].iter().enumerate() {
-            fs::write(dir.path().join(format!("f{idx}.bin")), vec![0u8; *size as usize]).unwrap();
+            fs::write(
+                dir.path().join(format!("f{idx}.bin")),
+                vec![0u8; *size as usize],
+            )
+            .unwrap();
         }
         let result = scan_path(request(dir.path(), Some(3), Some(2))).unwrap();
         assert_eq!(result.root.children.len(), 2);
         // After sort, the two largest (100 and 50) survive.
-        let sizes: Vec<_> = result
-            .root
-            .children
-            .iter()
-            .map(|c| c.size_bytes)
-            .collect();
+        let sizes: Vec<_> = result.root.children.iter().map(|c| c.size_bytes).collect();
         assert_eq!(sizes, vec![100, 50]);
         assert!(result.truncated);
     }
@@ -440,8 +452,12 @@ mod tests {
         let cb: Box<dyn Fn(u64) + Send + Sync> = Box::new(move |n| {
             probe.store(n, std::sync::atomic::Ordering::Relaxed);
         });
-        scan_path_with(request(dir.path(), Some(2), Some(400)), ScanCancellation::new(), Some(cb))
-            .unwrap();
+        scan_path_with(
+            request(dir.path(), Some(2), Some(400)),
+            ScanCancellation::new(),
+            Some(cb),
+        )
+        .unwrap();
         assert!(
             seen.load(std::sync::atomic::Ordering::Relaxed) >= 256,
             "progress callback should have fired"
