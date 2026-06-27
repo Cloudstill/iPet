@@ -48,19 +48,17 @@ describe("AppShell view dispatch", () => {
     document.body.appendChild(root);
   });
 
-  it("renders talk workspace with chrome, dashboard and panel", () => {
+  it("renders talk workspace with chrome, header and panel", () => {
     const { ctx } = makeCtx("talk");
     renderAppShell(root, ctx);
     expect(root.querySelector(".titlebar")).toBeTruthy();
-    expect(root.querySelector(".talk-dashboard")).toBeTruthy();
-    expect(root.querySelector(".pomodoro-labels")).toBeTruthy();
-    expect(root.querySelector(".pomodoro-actions")).toBeTruthy();
+    expect(root.querySelector(".talk-header")).toBeTruthy();
     expect(root.querySelector("#panel")).toBeTruthy();
     expect(root.querySelector("#overlay")).toBeTruthy();
     expect(root.querySelector(".app-shell").dataset.view).toBe("talk");
   });
 
-  it("renders a session switcher in the talk dashboard with one option per session", () => {
+  it("renders a session switcher in the talk header with one option per session", () => {
     const { ctx } = makeCtx("talk");
     ctx.state.sessions = [
       { id: 1, title: "First" },
@@ -93,28 +91,16 @@ describe("AppShell view dispatch", () => {
     expect(root.querySelector('[data-role="session-delete"]')?.disabled).toBeFalsy();
   });
 
-  it("renders capsule as a glass pill without titlebar or pet", () => {
+  it("renders capsule without titlebar and places the pet", () => {
     const { ctx, petRoot } = makeCtx("capsule");
     renderAppShell(root, ctx);
     expect(root.querySelector(".titlebar")).toBeNull();
     expect(root.querySelector("[data-capsule]")).toBeTruthy();
     expect(root.querySelector(".app-shell").classList.contains("compact")).toBe(true);
-    // The capsule is now a translucent pill, not the pet puck.
-    expect(root.querySelector(".capsule-pill")).toBeTruthy();
-    expect(root.querySelector('[data-role="capsule-pill-text"]')).toBeTruthy();
-    expect(root.querySelector(".pet-body")).toBeNull();
-    // No pet slot in the pill, so the persistent pet node stays detached.
-    expect(petRoot.parentElement).toBeNull();
-  });
-
-  it("right-click on the pill expands and suppresses the native menu", () => {
-    const { ctx, calls } = makeCtx("capsule");
-    renderAppShell(root, ctx);
-    const capsule = root.querySelector("[data-capsule]");
-    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 50 });
-    capsule.dispatchEvent(event);
-    expect(event.defaultPrevented).toBe(true);
-    expect(calls).toContain("expand");
+    expect(root.querySelector(".pet-body")?.getAttribute("aria-label")).toBe("展开 iPet");
+    // The persistent pet node should have been moved into the capsule slot.
+    expect(petRoot.parentElement).toBeTruthy();
+    expect(petRoot.closest("[data-capsule]")).toBeTruthy();
   });
 
   it("renders a pin button in the titlebar that reflects alwaysOnTop state", () => {
